@@ -121,12 +121,28 @@ class NativeVideoPlayerViewController(
     }
 
     override fun onPlaybackStateChanged(@Player.State state: Int) {
-        if (state == Player.STATE_READY) {
-            return api.onPlaybackReady()
-        }
+        when (state) {
+            Player.STATE_BUFFERING -> {
+                api.emitStatus(PlaybackStatus.Buffering)
+            }
 
-        if (state == Player.STATE_ENDED) {
-            return api.onPlaybackEnded()
+            Player.STATE_ENDED -> {
+                api.onPlaybackEnded()
+                api.emitStatus(PlaybackStatus.Stopped)
+            }
+
+            Player.STATE_IDLE -> {
+                api.emitStatus(PlaybackStatus.Stopped)
+            }
+
+            Player.STATE_READY -> {
+                api.onPlaybackReady()
+                if(player.isPlaying) {
+                    api.emitStatus(PlaybackStatus.Playing)
+                } else {
+                    api.emitStatus(PlaybackStatus.Paused)
+                }
+            }
         }
     }
 

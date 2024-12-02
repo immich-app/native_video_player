@@ -3,6 +3,7 @@ package me.albemala.native_video_player.platform_interface
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.EventChannel
 
 interface NativeVideoPlayerApiDelegate {
     fun loadVideoSource(videoSource: VideoSource)
@@ -24,9 +25,11 @@ const val invalidArgumentsErrorMessage = "Invalid arguments"
 class NativeVideoPlayerApi(
     messenger: BinaryMessenger,
     viewId: Int
-) : MethodChannel.MethodCallHandler {
+) : MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
 
     var delegate: NativeVideoPlayerApiDelegate? = null
+
+    private var eventSink: EventChannel.EventSink? = null
 
     private val channel: MethodChannel
 
@@ -34,6 +37,8 @@ class NativeVideoPlayerApi(
         val name = "me.albemala.native_video_player.api.${viewId}"
         channel = MethodChannel(messenger, name)
         channel.setMethodCallHandler(this)
+        val eventName = "${name}.event"
+        EventChannel(messenger, eventName).setStreamHandler(this)
     }
 
     fun dispose() {
@@ -46,6 +51,10 @@ class NativeVideoPlayerApi(
 
     fun onPlaybackEnded() {
         channel.invokeMethod("onPlaybackEnded", null)
+    }
+
+    fun emitStatus(status : PlaybackStatus) {
+        eventSink?.success(status.ordinal)
     }
 
     fun onError(error: Error) {
@@ -112,5 +121,13 @@ class NativeVideoPlayerApi(
                 result.notImplemented()
             }
         }
+    }
+
+    override fun onListen(arguments: Any?, sink: EventChannel.EventSink) {
+        eventSink = sink;
+    }
+
+    override fun onCancel(arguments: Any?) {
+        eventSink = null;
     }
 }

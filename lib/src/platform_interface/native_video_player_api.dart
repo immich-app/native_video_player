@@ -1,6 +1,5 @@
 import 'package:flutter/services.dart';
-import 'package:native_video_player/src/video_info.dart';
-import 'package:native_video_player/src/video_source.dart';
+import 'package:native_video_player/native_video_player.dart';
 
 class NativeVideoPlayerApi {
   final int viewId;
@@ -8,6 +7,7 @@ class NativeVideoPlayerApi {
   final void Function() onPlaybackEnded;
   final void Function(String?) onError;
   late final MethodChannel _channel;
+  late final EventChannel _eventChannel;
 
   NativeVideoPlayerApi({
     required this.viewId,
@@ -18,6 +18,8 @@ class NativeVideoPlayerApi {
     final name = 'me.albemala.native_video_player.api.$viewId';
     _channel = MethodChannel(name);
     _channel.setMethodCallHandler(_handleMethodCall);
+    final eventName = '$name.event';
+    _eventChannel = EventChannel(eventName);
   }
 
   void dispose() {
@@ -111,5 +113,11 @@ class NativeVideoPlayerApi {
       'setLoop',
       loop,
     );
+  }
+
+  Stream<PlaybackStatus> streamStatus() {
+    return _eventChannel.receiveBroadcastStream().map((status) {
+      return PlaybackStatus.values[status as int];
+    });
   }
 }

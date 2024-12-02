@@ -175,6 +175,19 @@ extension NativeVideoPlayerViewController {
                 break
             }
         }
+        
+        if keyPath == "timeControlStatus" {
+             switch player.timeControlStatus {
+             case .paused:
+                 api.emitStatus(status: PlaybackStatus.paused)
+             case .playing:
+                 api.emitStatus(status: PlaybackStatus.playing)
+             case .waitingToPlayAtSpecifiedRate:
+                 api.emitStatus(status: PlaybackStatus.buffering)
+             @unknown default:
+                 print("Unknown time control status.")
+             }
+         }
     }
 }
 
@@ -185,6 +198,7 @@ extension NativeVideoPlayerViewController {
             player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             player.play()
         } else {
+            api.emitStatus(status: PlaybackStatus.stopped)
             api.onPlaybackEnded()
         }
     }

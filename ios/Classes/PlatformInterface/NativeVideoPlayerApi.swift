@@ -15,10 +15,11 @@ protocol NativeVideoPlayerApiDelegate: AnyObject {
 let invalidArgumentsFlutterError = FlutterError(
     code: "invalid_argument", message: "Invalid arguments", details: nil)
 
-class NativeVideoPlayerApi {
+class NativeVideoPlayerApi: NSObject, FlutterStreamHandler {
     weak var delegate: NativeVideoPlayerApiDelegate?
 
     let channel: FlutterMethodChannel
+    private var eventSink: FlutterEventSink?
 
     init(
         messenger: FlutterBinaryMessenger,
@@ -29,11 +30,26 @@ class NativeVideoPlayerApi {
             name: name,
             binaryMessenger: messenger
         )
+        let eventName = "\(name).event"
+        let eventChannel = FlutterEventChannel(name: eventName, binaryMessenger: messenger)
+
+        super.init()
         channel.setMethodCallHandler(handleMethodCall)
+        eventChannel.setStreamHandler(self)
     }
 
     deinit {
         channel.setMethodCallHandler(nil)
+    }
+    
+    func onListen(withArguments arguments: Any?, eventSink: @escaping FlutterEventSink) -> FlutterError? {
+        self.eventSink = eventSink
+        return nil
+    }
+    
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        eventSink = nil
+        return nil
     }
 
     func onPlaybackReady() {
@@ -46,6 +62,10 @@ class NativeVideoPlayerApi {
 
     func onError(_ error: Error) {
         channel.invokeMethod("onError", arguments: error.localizedDescription)
+    }
+    
+    func emitStatus(status : PlaybackStatus) {
+        self.eventSink?(status.rawValue)
     }
 
     private func handleMethodCall(call: FlutterMethodCall, result: @escaping FlutterResult) {
