@@ -11,7 +11,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.platform.PlatformView
 import me.albemala.native_video_player.platform_interface.*
@@ -71,8 +71,8 @@ class NativeVideoPlayerViewController(
         when (videoSource.type) {
             VideoSourceType.Asset, VideoSourceType.File -> player.setMediaItem(mediaItem)
             VideoSourceType.Network -> {
-                val dataSource = DefaultHttpDataSource.Factory().setDefaultRequestProperties(videoSource.headers)
-                val mediaSource = ProgressiveMediaSource.Factory(dataSource).createMediaSource(mediaItem)
+                val dataSource = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true).setDefaultRequestProperties(videoSource.headers)
+                val mediaSource = DefaultMediaSourceFactory(dataSource).createMediaSource(mediaItem)
                 player.setMediaSource(mediaSource)
             }
         }
