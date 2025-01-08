@@ -1,3 +1,7 @@
+## 1.3.2
+
+- Added HLS and MPEG-DASH support
+
 ## 1.3.1
 
 - Fixed #10 
