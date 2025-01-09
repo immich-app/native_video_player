@@ -5,4 +5,6 @@ enum VideoSourceType {
   asset,
   file,
   network,
+  hls,
+  dash
 }

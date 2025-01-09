@@ -23,4 +23,6 @@ const _$VideoSourceTypeEnumMap = {
   VideoSourceType.asset: 'asset',
   VideoSourceType.file: 'file',
   VideoSourceType.network: 'network',
+  VideoSourceType.hls: 'hls',
+  VideoSourceType.dash: 'dash',
 };
