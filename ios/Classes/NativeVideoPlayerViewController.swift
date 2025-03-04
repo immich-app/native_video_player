@@ -23,6 +23,16 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
 
         api.delegate = self
         player.addObserver(self, forKeyPath: "status", context: nil)
+        
+        // Play audio even when the device is in silent mode
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("Failed to set playback audio session. Error: \(error)")
+        }
     }
 
     deinit {
