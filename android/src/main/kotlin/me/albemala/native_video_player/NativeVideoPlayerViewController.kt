@@ -155,7 +155,7 @@ class NativeVideoPlayerViewController(
                     lastPosition = position
                     api.onPlaybackPositionChanged(position)
                 }
-                positionUpdateHandler.postDelayed(this, 1 / 120)
+                positionUpdateHandler.postDelayed(this, 8L)
             }
         }
         positionUpdateHandler.post(positionUpdateRunnable!!)
