@@ -44,6 +44,10 @@ class NativeVideoPlayerApi {
         channel.invokeMethod("onPlaybackEnded", arguments: nil)
     }
 
+    func onPlaybackPositionChanged(position: Int64) {
+        channel.invokeMethod("onPlaybackPositionChanged", arguments: position)
+    }
+
     func onError(_ error: Error) {
         channel.invokeMethod("onError", arguments: error.localizedDescription)
     }

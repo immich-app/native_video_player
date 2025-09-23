@@ -12,7 +12,7 @@ interface NativeVideoPlayerApiDelegate {
     fun pause()
     fun stop()
     fun isPlaying(): Boolean
-    fun seekTo(position: Int)
+    fun seekTo(position: Long)
     fun setPlaybackSpeed(speed: Double)
     fun setVolume(volume: Double)
     fun setLoop(loop: Boolean)
@@ -46,6 +46,10 @@ class NativeVideoPlayerApi(
 
     fun onPlaybackEnded() {
         channel.invokeMethod("onPlaybackEnded", null)
+    }
+
+    fun onPlaybackPositionChanged(position: Long) {
+        channel.invokeMethod("onPlaybackPositionChanged", position)
     }
 
     fun onError(error: Throwable) {

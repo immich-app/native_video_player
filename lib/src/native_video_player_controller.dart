@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
 import 'package:native_video_player/src/platform_interface/native_video_player_api.dart';
 import 'package:native_video_player/src/playback_info.dart';
 import 'package:native_video_player/src/playback_status.dart';
@@ -11,8 +11,6 @@ class NativeVideoPlayerController with ChangeNotifier {
   late final NativeVideoPlayerApi _api;
   VideoSource? _videoSource;
   VideoInfo? _videoInfo;
-
-  bool _isPlaybackPositionActive = false;
 
   PlaybackStatus get _playbackStatus => onPlaybackStatusChanged.value;
 
@@ -77,6 +75,7 @@ class NativeVideoPlayerController with ChangeNotifier {
       viewId: viewId,
       onPlaybackReady: _onPlaybackReady,
       onPlaybackEnded: _onPlaybackEnded,
+      onPlaybackPositionChanged: _onPlaybackPositionChanged,
       onError: _onError,
     );
   }
@@ -88,7 +87,7 @@ class NativeVideoPlayerController with ChangeNotifier {
     onPlaybackReady.notifyListeners();
   }
 
-  Future<void> _onPlaybackEnded() async {
+  void _onPlaybackEnded() {
     onPlaybackStatusChanged.value = PlaybackStatus.stopped;
     onPlaybackEnded.notifyListeners();
   }
@@ -101,7 +100,6 @@ class NativeVideoPlayerController with ChangeNotifier {
   @override
   @protected
   void dispose() {
-    _isPlaybackPositionActive = false;
     _api.dispose();
     super.dispose();
   }
@@ -120,7 +118,6 @@ class NativeVideoPlayerController with ChangeNotifier {
   /// NOTE: This method might throw an exception if the video cannot be played.
   Future<void> play() async {
     await _api.play();
-    _startPlaybackPositionTimer();
     onPlaybackStatusChanged.value = PlaybackStatus.playing;
     await setPlaybackSpeed(_playbackSpeed);
   }
@@ -131,7 +128,6 @@ class NativeVideoPlayerController with ChangeNotifier {
   /// NOTE: This method might throw an exception if the video cannot be paused.
   Future<void> pause() async {
     await _api.pause();
-    _isPlaybackPositionActive = false;
     onPlaybackStatusChanged.value = PlaybackStatus.paused;
   }
 
@@ -142,9 +138,7 @@ class NativeVideoPlayerController with ChangeNotifier {
   /// NOTE: This method might throw an exception if the video cannot be stopped.
   Future<void> stop() async {
     await _api.stop();
-    _isPlaybackPositionActive = false;
     onPlaybackStatusChanged.value = PlaybackStatus.stopped;
-    await _onPlaybackPositionTimerChanged();
   }
 
   /// Returns true if the video is playing, or false if it's stopped or paused.
@@ -156,7 +150,7 @@ class NativeVideoPlayerController with ChangeNotifier {
     }
   }
 
-  /// Moves the playback position to the given position in seconds.
+  /// Moves the playback position to the given position in milliseconds.
   ///
   /// NOTE: This method might throw an exception if the video cannot be seeked.
   Future<void> seekTo(int milliseconds) async {
@@ -212,28 +206,8 @@ class NativeVideoPlayerController with ChangeNotifier {
     return _api.setLoop(loop);
   }
 
-  void _startPlaybackPositionTimer() {
-    _isPlaybackPositionActive = true;
-    WidgetsBinding.instance
-        .addPostFrameCallback(_onPlaybackPositionFrameCallback);
-  }
-
-  /// NOTE: This method can throw an exception
-  /// if the playback position cannot be retrieved.
-  Future<void> _onPlaybackPositionFrameCallback(Duration _) async {
-    if (!_isPlaybackPositionActive) return;
-
-    final position = await _api.getPlaybackPosition() ?? 0;
-    onPlaybackPositionChanged.value = position;
-
-    if (_isPlaybackPositionActive) {
-      WidgetsBinding.instance
-          .addPostFrameCallback(_onPlaybackPositionFrameCallback);
-    }
-  }
-
-  Future<void> _onPlaybackPositionTimerChanged() async {
-    final position = await _api.getPlaybackPosition() ?? 0;
+  // ignore: use_setters_to_change_properties
+  void _onPlaybackPositionChanged(int position) {
     onPlaybackPositionChanged.value = position;
   }
 }

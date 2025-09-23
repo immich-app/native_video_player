@@ -7,7 +7,9 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     private let player: AVPlayer
     private let playerView: NativeVideoPlayerView
     private var loop = false
-    
+    private var lastPosition: Int64 = -1
+    private var timeObserver: Any?
+
     init(
         messenger: FlutterBinaryMessenger,
         viewId: Int64,
@@ -38,6 +40,7 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     deinit {
         player.removeObserver(self, forKeyPath: "status")
         removeOnVideoCompletedObserver()
+        removePeriodicTimeObserver()
         
         player.replaceCurrentItem(with: nil)
     }
@@ -70,6 +73,7 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         addOnVideoCompletedObserver()
         
         api.onPlaybackReady()
+        addPeriodicTimeObserver()
     }
     
     func getVideoInfo() -> VideoInfo {
@@ -216,5 +220,27 @@ extension NativeVideoPlayerViewController {
             name: .AVPlayerItemDidPlayToEndTime,
             object: player.currentItem
         )
+    }
+
+    private func addPeriodicTimeObserver() {
+        removePeriodicTimeObserver()
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 1.0/120.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC)),
+            queue: .main
+        ) { [weak self] time in
+            guard let self = self else { return }
+            let position = Int64(time.seconds * 1000)
+            if lastPosition != position {
+                lastPosition = position
+                self.api.onPlaybackPositionChanged(position: position)
+            }
+        }
+    }
+
+    private func removePeriodicTimeObserver() {
+        if let observer = timeObserver {
+            player.removeTimeObserver(observer)
+            timeObserver = nil
+        }
     }
 }
