@@ -1,12 +1,12 @@
 protocol NativeVideoPlayerApiDelegate: AnyObject {
     func loadVideoSource(videoSource: VideoSource)
     func getVideoInfo() -> VideoInfo
-    func getPlaybackPosition() -> Int
+    func getPlaybackPosition() -> Int64
     func play()
     func pause()
     func stop(completion: @escaping () -> Void)
     func isPlaying() -> Bool
-    func seekTo(position: Int, completion: @escaping () -> Void)
+    func seekTo(position: Int64, completion: @escaping () -> Void)
     func setPlaybackSpeed(speed: Double)
     func setVolume(volume: Double)
     func setLoop(loop: Bool)
@@ -81,7 +81,7 @@ class NativeVideoPlayerApi {
             let playing = delegate?.isPlaying()
             result(playing)
         case "seekTo":
-            guard let position = call.arguments as? Int else {
+            guard let position = call.arguments as? Int64 else {
                 result(invalidArgumentsFlutterError)
                 return
             }

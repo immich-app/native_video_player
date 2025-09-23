@@ -7,7 +7,7 @@ import io.flutter.plugin.common.MethodChannel
 interface NativeVideoPlayerApiDelegate {
     fun loadVideoSource(videoSource: VideoSource)
     fun getVideoInfo(): VideoInfo
-    fun getPlaybackPosition(): Int
+    fun getPlaybackPosition(): Long
     fun play()
     fun pause()
     fun stop()
@@ -85,7 +85,7 @@ class NativeVideoPlayerApi(
                 result.success(playing)
             }
             "seekTo" -> {
-                val position = methodCall.arguments as? Int
+                val position = methodCall.arguments as? Long
                     ?: return result.error(invalidArgumentsErrorCode, invalidArgumentsErrorMessage, null)
                 delegate?.seekTo(position)
                 result.success(null)

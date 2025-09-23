@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:native_video_player/src/platform_interface/native_video_player_api.dart';
 import 'package:native_video_player/src/playback_info.dart';
 import 'package:native_video_player/src/playback_status.dart';
@@ -12,7 +12,7 @@ class NativeVideoPlayerController with ChangeNotifier {
   VideoSource? _videoSource;
   VideoInfo? _videoInfo;
 
-  Timer? _playbackPositionTimer;
+  bool _isPlaybackPositionActive = false;
 
   PlaybackStatus get _playbackStatus => onPlaybackStatusChanged.value;
 
@@ -101,7 +101,7 @@ class NativeVideoPlayerController with ChangeNotifier {
   @override
   @protected
   void dispose() {
-    _stopPlaybackPositionTimer();
+    _isPlaybackPositionActive = false;
     _api.dispose();
     super.dispose();
   }
@@ -131,7 +131,7 @@ class NativeVideoPlayerController with ChangeNotifier {
   /// NOTE: This method might throw an exception if the video cannot be paused.
   Future<void> pause() async {
     await _api.pause();
-    _stopPlaybackPositionTimer();
+    _isPlaybackPositionActive = false;
     onPlaybackStatusChanged.value = PlaybackStatus.paused;
   }
 
@@ -142,9 +142,9 @@ class NativeVideoPlayerController with ChangeNotifier {
   /// NOTE: This method might throw an exception if the video cannot be stopped.
   Future<void> stop() async {
     await _api.stop();
-    _stopPlaybackPositionTimer();
+    _isPlaybackPositionActive = false;
     onPlaybackStatusChanged.value = PlaybackStatus.stopped;
-    await _onPlaybackPositionTimerChanged(null);
+    await _onPlaybackPositionTimerChanged();
   }
 
   /// Returns true if the video is playing, or false if it's stopped or paused.
@@ -159,11 +159,11 @@ class NativeVideoPlayerController with ChangeNotifier {
   /// Moves the playback position to the given position in seconds.
   ///
   /// NOTE: This method might throw an exception if the video cannot be seeked.
-  Future<void> seekTo(int seconds) async {
-    var position = seconds;
-    if (seconds < 0) position = 0;
+  Future<void> seekTo(int milliseconds) async {
+    var position = milliseconds;
+    if (milliseconds < 0) position = 0;
     final duration = videoInfo?.duration ?? 0;
-    if (seconds > duration) position = duration;
+    if (milliseconds > duration) position = duration;
     await _api.seekTo(position);
     // if the video is not playing, update onPlaybackPositionChanged
     if (_playbackStatus != PlaybackStatus.playing) {
@@ -171,20 +171,20 @@ class NativeVideoPlayerController with ChangeNotifier {
     }
   }
 
-  /// Seeks the video forward by the given number of seconds.
-  Future<void> seekForward(int seconds) async {
+  /// Seeks the video forward by the given number of milliseconds.
+  Future<void> seekForward(int milliseconds) async {
     final duration = videoInfo?.duration ?? 0;
-    final newPlaybackPosition = _playbackPosition + seconds > duration //
+    final newPlaybackPosition = _playbackPosition + milliseconds > duration //
         ? duration
-        : _playbackPosition + seconds;
+        : _playbackPosition + milliseconds;
     await seekTo(newPlaybackPosition);
   }
 
-  /// Seeks the video backward by the given number of seconds.
-  Future<void> seekBackward(int seconds) async {
-    final newPlaybackPosition = _playbackPosition - seconds < 0 //
+  /// Seeks the video backward by the given number of milliseconds.
+  Future<void> seekBackward(int milliseconds) async {
+    final newPlaybackPosition = _playbackPosition - milliseconds < 0 //
         ? 0
-        : _playbackPosition - seconds;
+        : _playbackPosition - milliseconds;
     await seekTo(newPlaybackPosition);
   }
 
@@ -213,22 +213,26 @@ class NativeVideoPlayerController with ChangeNotifier {
   }
 
   void _startPlaybackPositionTimer() {
-    _stopPlaybackPositionTimer();
-    _playbackPositionTimer ??= Timer.periodic(
-      const Duration(milliseconds: 100),
-      _onPlaybackPositionTimerChanged,
-    );
-  }
-
-  void _stopPlaybackPositionTimer() {
-    if (_playbackPositionTimer == null) return;
-    _playbackPositionTimer!.cancel();
-    _playbackPositionTimer = null;
+    _isPlaybackPositionActive = true;
+    WidgetsBinding.instance
+        .addPostFrameCallback(_onPlaybackPositionFrameCallback);
   }
 
   /// NOTE: This method can throw an exception
   /// if the playback position cannot be retrieved.
-  Future<void> _onPlaybackPositionTimerChanged(Timer? timer) async {
+  Future<void> _onPlaybackPositionFrameCallback(Duration _) async {
+    if (!_isPlaybackPositionActive) return;
+
+    final position = await _api.getPlaybackPosition() ?? 0;
+    onPlaybackPositionChanged.value = position;
+
+    if (_isPlaybackPositionActive) {
+      WidgetsBinding.instance
+          .addPostFrameCallback(_onPlaybackPositionFrameCallback);
+    }
+  }
+
+  Future<void> _onPlaybackPositionTimerChanged() async {
     final position = await _api.getPlaybackPosition() ?? 0;
     onPlaybackPositionChanged.value = position;
   }
