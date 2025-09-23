@@ -2,14 +2,14 @@ group 'me.albemala.native_video_player'
 version '1.0.0'
 
 buildscript {
-    ext.kotlin_version = '2.0.20'
+    ext.kotlin_version = '2.2.20'
     repositories {
         google()
         mavenCentral()
     }
 
     dependencies {
-        classpath("com.android.tools.build:gradle:8.1.4")
+        classpath("com.android.tools.build:gradle:8.13.0")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
     }
 }
@@ -29,7 +29,7 @@ android {
       namespace = "me.albemala.native_video_player"
     }
 
-    compileSdk = 35
+    compileSdk = 36
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -47,10 +47,9 @@ android {
     defaultConfig {
         minSdk = 21
     }
-
 }
 
  dependencies {
      implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
-     implementation("androidx.media3:media3-exoplayer:1.5.0")
+     implementation("androidx.media3:media3-exoplayer:1.8.0")
  }
