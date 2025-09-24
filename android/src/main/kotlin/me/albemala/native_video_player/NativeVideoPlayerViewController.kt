@@ -1,6 +1,8 @@
 package me.albemala.native_video_player
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.view.SurfaceView
 import android.view.View
 import android.widget.RelativeLayout
@@ -28,6 +30,10 @@ class NativeVideoPlayerViewController(
     private val player: ExoPlayer
     private val view: SurfaceView
     private val relativeLayout: RelativeLayout
+
+    private val positionUpdateHandler = Handler(Looper.getMainLooper())
+    private var positionUpdateRunnable: Runnable? = null
+    private var lastPosition = -1L
 
     init {
         api.delegate = this
@@ -60,8 +66,9 @@ class NativeVideoPlayerViewController(
     }
 
     override fun dispose() {
-        api.dispose()
         player.removeListener(this)
+        stopPositionUpdates()
+        api.dispose()
         player.release()
     }
 
@@ -81,11 +88,11 @@ class NativeVideoPlayerViewController(
 
     override fun getVideoInfo(): VideoInfo {
         val videoSize = player.videoSize
-        return VideoInfo(videoSize.height, videoSize.width, player.duration.toInt() / 1000)
+        return VideoInfo(videoSize.height.toLong(), videoSize.width.toLong(), player.duration)
     }
 
-    override fun getPlaybackPosition(): Int {
-        return player.currentPosition.toInt() / 1000
+    override fun getPlaybackPosition(): Long {
+        return player.currentPosition
     }
 
     override fun play() {
@@ -104,8 +111,8 @@ class NativeVideoPlayerViewController(
         return player.isPlaying
     }
 
-    override fun seekTo(position: Int) {
-        player.seekTo(position.toLong() * 1000)
+    override fun seekTo(position: Long) {
+        player.seekTo(position)
     }
 
     override fun setPlaybackSpeed(speed: Double) {
@@ -122,7 +129,8 @@ class NativeVideoPlayerViewController(
 
     override fun onPlaybackStateChanged(@Player.State state: Int) {
         if (state == Player.STATE_READY) {
-            return api.onPlaybackReady()
+            api.onPlaybackReady()
+            startPositionUpdates()
         }
 
         if (state == Player.STATE_ENDED) {
@@ -135,6 +143,28 @@ class NativeVideoPlayerViewController(
             api.onError(Error("Unknown playback error occurred"))
         } else {
             api.onError(error.cause as Throwable)
+        }
+    }
+
+    private fun startPositionUpdates() {
+        stopPositionUpdates()
+        positionUpdateRunnable = object : Runnable {
+            override fun run() {
+                val position = player.currentPosition
+                if (lastPosition != position) {
+                    lastPosition = position
+                    api.onPlaybackPositionChanged(position)
+                }
+                positionUpdateHandler.postDelayed(this, 8L)
+            }
+        }
+        positionUpdateHandler.post(positionUpdateRunnable!!)
+    }
+
+    private fun stopPositionUpdates() {
+        positionUpdateRunnable?.let {
+            positionUpdateHandler.removeCallbacks(it)
+            positionUpdateRunnable = null
         }
     }
 }

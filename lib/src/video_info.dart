@@ -12,7 +12,7 @@ class VideoInfo {
   /// Width of the video frame, in pixels.
   final int width;
 
-  /// Duration of the video, in seconds.
+  /// Duration of the video, in milliseconds.
   final int duration;
 
   /// Aspect ratio of the video frame, in pixels.
