@@ -6,7 +6,7 @@ class PlaybackInfo {
   /// The current playback status.
   final PlaybackStatus status;
 
-  /// The current playback position, in seconds.
+  /// The current playback position, in milliseconds.
   final int position;
 
   /// The current playback position as a value between 0 and 1.

@@ -7,6 +7,8 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     private let player: AVPlayer
     private let playerView: NativeVideoPlayerView
     private var loop = false
+    private var lastPosition: Int64 = -1
+    private var timeObserver: Any?
 
     init(
         messenger: FlutterBinaryMessenger,
@@ -20,7 +22,7 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
         player = AVPlayer()
         playerView = NativeVideoPlayerView(frame: frame, player: player)
         super.init()
-
+        
         api.delegate = self
         player.addObserver(self, forKeyPath: "status", context: nil)
         
@@ -34,18 +36,19 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
             print("Failed to set playback audio session. Error: \(error)")
         }
     }
-
+    
     deinit {
         player.removeObserver(self, forKeyPath: "status")
         removeOnVideoCompletedObserver()
-
+        removePeriodicTimeObserver()
+        
         player.replaceCurrentItem(with: nil)
     }
-
+    
     public func view() -> UIView {
         playerView
     }
-
+    
 }
 
 extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
@@ -60,18 +63,19 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
             return
         }
         let videoAsset =
-            isUrl
-            ? AVURLAsset(url: uri, options: ["AVURLAssetHTTPHeaderFieldsKey": videoSource.headers])
-            : AVAsset(url: uri)
+        isUrl
+        ? AVURLAsset(url: uri, options: ["AVURLAssetHTTPHeaderFieldsKey": videoSource.headers])
+        : AVAsset(url: uri)
         let playerItem = AVPlayerItem(asset: videoAsset)
-
+        
         removeOnVideoCompletedObserver()
         player.replaceCurrentItem(with: playerItem)
         addOnVideoCompletedObserver()
-
+        
         api.onPlaybackReady()
+        addPeriodicTimeObserver()
     }
-
+    
     func getVideoInfo() -> VideoInfo {
         let videoInfo = VideoInfo(
             height: getVideoHeight(),
@@ -80,18 +84,18 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         )
         return videoInfo
     }
-
+    
     func play() {
         if player.currentItem?.currentTime() == player.currentItem?.duration {
             player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
         }
         player.play()
     }
-
+    
     func pause() {
         player.pause()
     }
-
+    
     func stop(completion: @escaping () -> Void) {
         player.pause()
         if #available(iOS 15, *) {
@@ -102,61 +106,63 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
             completion()
         }
     }
-
+    
     func isPlaying() -> Bool {
         player.rate != 0 && player.error == nil
     }
-
-    func seekTo(position: Int, completion: @escaping () -> Void) {
+    
+    func seekTo(position: Int64, completion: @escaping () -> Void) {
         player.seek(
-            to: CMTimeMakeWithSeconds(Float64(position), preferredTimescale: Int32(NSEC_PER_SEC)),
+            to: CMTime(value: position, timescale: 1000),
             toleranceBefore: .zero,
             toleranceAfter: .zero
         ) { _ in
             completion()
         }
     }
-
-    func getPlaybackPosition() -> Int {
-        let currentTime = player.currentItem?.currentTime() ?? CMTime.zero
-        return Int(currentTime.isValid ? currentTime.seconds : 0)
+    
+    func getPlaybackPosition() -> Int64 {
+        guard let currentItem = player.currentItem else { return 0 }
+        let currentTime = currentItem.currentTime()
+        return currentTime.isValid ? Int64(currentTime.seconds * 1000) : 0
     }
-
+    
     func setPlaybackSpeed(speed: Double) {
         player.rate = Float(speed)
     }
-
+    
     func setVolume(volume: Double) {
         player.volume = Float(volume)
     }
-
+    
     func setLoop(loop: Bool) {
         self.loop = loop
     }
 }
 
 extension NativeVideoPlayerViewController {
-    private func getVideoDuration() -> Int {
-        Int(player.currentItem?.asset.duration.seconds ?? 0)
+    private func getVideoDuration() -> Int64 {
+        guard let currentItem = player.currentItem else { return 0 }
+        return Int64(currentItem.asset.duration.seconds * 1000)
     }
-
+    
     private func getVideoHeight() -> Int {
         if let videoTrack = getVideoTrack() {
             return Int(videoTrack.naturalSize.height)
         }
         return 0
     }
-
+    
     private func getVideoWidth() -> Int {
         if let videoTrack = getVideoTrack() {
             return Int(videoTrack.naturalSize.width)
         }
         return 0
     }
-
+    
     private func getVideoTrack() -> AVAssetTrack? {
         if let tracks = player.currentItem?.asset.tracks(withMediaType: .video),
-            let track = tracks.first
+           let track = tracks.first
         {
             return track
         }
@@ -198,7 +204,7 @@ extension NativeVideoPlayerViewController {
             api.onPlaybackEnded()
         }
     }
-
+    
     private func addOnVideoCompletedObserver() {
         NotificationCenter.default.addObserver(
             self,
@@ -207,12 +213,34 @@ extension NativeVideoPlayerViewController {
             object: player.currentItem
         )
     }
-
+    
     private func removeOnVideoCompletedObserver() {
         NotificationCenter.default.removeObserver(
             self,
             name: .AVPlayerItemDidPlayToEndTime,
             object: player.currentItem
         )
+    }
+
+    private func addPeriodicTimeObserver() {
+        removePeriodicTimeObserver()
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 1.0/120.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC)),
+            queue: .main
+        ) { [weak self] time in
+            guard let self = self else { return }
+            let position = Int64(time.seconds * 1000)
+            if lastPosition != position {
+                lastPosition = position
+                self.api.onPlaybackPositionChanged(position: position)
+            }
+        }
+    }
+
+    private func removePeriodicTimeObserver() {
+        if let observer = timeObserver {
+            player.removeTimeObserver(observer)
+            timeObserver = nil
+        }
     }
 }

@@ -6,6 +6,7 @@ class NativeVideoPlayerApi {
   final int viewId;
   final void Function() onPlaybackReady;
   final void Function() onPlaybackEnded;
+  final void Function(int) onPlaybackPositionChanged;
   final void Function(String?) onError;
   late final MethodChannel _channel;
 
@@ -13,6 +14,7 @@ class NativeVideoPlayerApi {
     required this.viewId,
     required this.onPlaybackReady,
     required this.onPlaybackEnded,
+    required this.onPlaybackPositionChanged,
     required this.onError,
   }) {
     final name = 'me.albemala.native_video_player.api.$viewId';
@@ -30,6 +32,9 @@ class NativeVideoPlayerApi {
         onPlaybackReady();
       case 'onPlaybackEnded':
         onPlaybackEnded();
+      case 'onPlaybackPositionChanged':
+        final position = call.arguments as int;
+        onPlaybackPositionChanged(position);
       case 'onError':
         // final errorCode = call.arguments['errorCode'] as int;
         // final errorMessage = call.arguments['errorMessage'] as String;
