@@ -111,8 +111,8 @@ class NativeVideoPlayerViewController(
         return player.isPlaying
     }
 
-    override fun seekTo(position: Long) {
-        player.seekTo(position)
+    override fun seekTo(position: Int) {
+        player.seekTo(position.toLong())
     }
 
     override fun setPlaybackSpeed(speed: Double) {
