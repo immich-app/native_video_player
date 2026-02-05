@@ -1,6 +1,6 @@
 protocol NativeVideoPlayerApiDelegate: AnyObject {
     func loadVideoSource(videoSource: VideoSource)
-    func getVideoInfo() -> VideoInfo
+    func getVideoInfo(completion: @escaping (VideoInfo) -> Void)
     func getPlaybackPosition() -> Int64
     func play()
     func pause()
@@ -66,8 +66,7 @@ class NativeVideoPlayerApi {
             delegate?.loadVideoSource(videoSource: videoSource)
             result(nil)
         case "getVideoInfo":
-            let videoInfo = delegate?.getVideoInfo().toMap()
-            result(videoInfo)
+            delegate?.getVideoInfo { info in result(info.toMap()) }
         case "getPlaybackPosition":
             let playbackPosition = delegate?.getPlaybackPosition()
             result(playbackPosition)

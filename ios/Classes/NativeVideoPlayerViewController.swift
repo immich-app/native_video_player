@@ -9,11 +9,12 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     private var loop = false
     private var lastPosition: Int64 = -1
     private var timeObserver: Any?
+    private var timeControlObserver: NSKeyValueObservation?
 
     init(
         messenger: FlutterBinaryMessenger,
         viewId: Int64,
-        frame: CGRect
+        frame: CGRect,
     ) {
         api = NativeVideoPlayerApi(
             messenger: messenger,
@@ -28,9 +29,7 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
         
         // Play audio even when the device is in silent mode
         do {
-            try AVAudioSession.sharedInstance().setCategory(
-                .playback,
-                mode: .default)
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             print("Failed to set playback audio session. Error: \(error)")
@@ -39,9 +38,10 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     
     deinit {
         player.removeObserver(self, forKeyPath: "status")
+        timeControlObserver?.invalidate()
         removeOnVideoCompletedObserver()
         removePeriodicTimeObserver()
-        
+
         player.replaceCurrentItem(with: nil)
     }
     
@@ -55,34 +55,87 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
     func loadVideoSource(videoSource: VideoSource) {
         let isUrl = videoSource.type == .network
         let sourcePath = videoSource.path
-        guard
-            let uri = isUrl
-                ? URL(string: sourcePath)
-                : URL(fileURLWithPath: sourcePath)
-        else {
-            return
+        guard let uri = isUrl ? URL(string: sourcePath) : URL(fileURLWithPath: sourcePath) else { return }
+
+        let videoAsset: AVAsset
+        if isUrl, let asset = VideoResourceLoader.shared.prepareAsset(url: uri, headers: videoSource.headers) {
+            videoAsset = asset
+        } else if isUrl {
+            videoAsset = AVURLAsset(url: uri, options: ["AVURLAssetHTTPHeaderFieldsKey": videoSource.headers])
+        } else {
+            videoAsset = AVAsset(url: uri)
         }
-        let videoAsset =
-        isUrl
-        ? AVURLAsset(url: uri, options: ["AVURLAssetHTTPHeaderFieldsKey": videoSource.headers])
-        : AVAsset(url: uri)
+
         let playerItem = AVPlayerItem(asset: videoAsset)
-        
         removeOnVideoCompletedObserver()
         player.replaceCurrentItem(with: playerItem)
         addOnVideoCompletedObserver()
-        
+        timeControlObserver = addTimeControlObserver()
         api.onPlaybackReady()
         addPeriodicTimeObserver()
     }
+
+    func getVideoInfo(completion: @escaping (VideoInfo) -> Void) {
+        if #available(iOS 15, *) {
+            getVideoInfoAsync(completion: completion)
+        } else {
+            getVideoInfoLegacy(completion: completion)
+        }
+    }
+
+    @available(iOS 15, *)
+    private func getVideoInfoAsync(completion: @escaping (VideoInfo) -> Void) {
+        guard let asset = player.currentItem?.asset else {
+            return completion(VideoInfo(height: 0, width: 0, duration: 0))
+        }
+        Task {
+            do {
+                async let d = asset.load(.duration)
+                async let t = asset.loadTracks(withMediaType: .video)
+
+                let duration = try await d
+                let size = try await t.first?.load(.naturalSize) ?? .zero
+
+                let info = VideoInfo(
+                    height: Int(size.height),
+                    width: Int(size.width),
+                    duration: Int64(duration.seconds * 1000)
+                )
+                completion(info)
+            } catch {
+                completion(VideoInfo(height: 0, width: 0, duration: 0))
+            }
+        }
+    }
     
-    func getVideoInfo() -> VideoInfo {
-        let videoInfo = VideoInfo(
-            height: getVideoHeight(),
-            width: getVideoWidth(),
-            duration: getVideoDuration()
-        )
-        return videoInfo
+    private func getVideoInfoLegacy(completion: @escaping (VideoInfo) -> Void) {
+        guard let asset = player.currentItem?.asset else {
+            return completion(VideoInfo(height: 0, width: 0, duration: 0))
+        }
+
+        asset.loadValuesAsynchronously(forKeys: ["duration", "tracks"]) {
+            let duration: Int64
+            if asset.statusOfValue(forKey: "duration", error: nil) == .loaded {
+                duration = Int64(asset.duration.seconds * 1000)
+            } else {
+                duration = 0
+            }
+
+            var width = 0, height = 0
+            if asset.statusOfValue(forKey: "tracks", error: nil) == .loaded,
+            let track = asset.tracks(withMediaType: .video).first {
+                track.loadValuesAsynchronously(forKeys: ["naturalSize"]) {
+                    if track.statusOfValue(forKey: "naturalSize", error: nil) == .loaded {
+                        width = Int(track.naturalSize.width)
+                        height = Int(track.naturalSize.height)
+                    }
+                    completion(VideoInfo(height: height, width: width, duration: duration))
+                }
+                return
+            }
+
+            completion(VideoInfo(height: height, width: width, duration: duration))
+        }
     }
     
     func play() {
@@ -141,56 +194,14 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
 }
 
 extension NativeVideoPlayerViewController {
-    private func getVideoDuration() -> Int64 {
-        guard let currentItem = player.currentItem else { return 0 }
-        return Int64(currentItem.asset.duration.seconds * 1000)
-    }
-    
-    private func getVideoHeight() -> Int {
-        if let videoTrack = getVideoTrack() {
-            return Int(videoTrack.naturalSize.height)
-        }
-        return 0
-    }
-    
-    private func getVideoWidth() -> Int {
-        if let videoTrack = getVideoTrack() {
-            return Int(videoTrack.naturalSize.width)
-        }
-        return 0
-    }
-    
-    private func getVideoTrack() -> AVAssetTrack? {
-        if let tracks = player.currentItem?.asset.tracks(withMediaType: .video),
-           let track = tracks.first
-        {
-            return track
-        }
-        return nil
-    }
-}
-
-extension NativeVideoPlayerViewController {
     override public func observeValue(
         forKeyPath keyPath: String?,
         of object: Any?,
         change: [NSKeyValueChangeKey: Any]?,
         context: UnsafeMutableRawPointer?
     ) {
-        if keyPath == "status" {
-            switch player.status {
-            case .unknown:
-                break
-            case .readyToPlay:
-                break
-            case .failed:
-                if let error = player.error {
-                    api.onError(error)
-                }
-            default:
-                break
-            }
-        }
+        guard keyPath == "status", player.status == .failed, let error = player.error else { return }
+        api.onError(error)
     }
 }
 
@@ -220,6 +231,22 @@ extension NativeVideoPlayerViewController {
             name: .AVPlayerItemDidPlayToEndTime,
             object: player.currentItem
         )
+    }
+
+    private func addTimeControlObserver() -> NSKeyValueObservation {
+        return player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            guard let self = self else { return }
+
+            if player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+               player.reasonForWaitingToPlay == .toMinimizeStalls,
+               VideoResourceLoader.shared.clientCredential != nil,
+               !VideoResourceLoader.shared.hasPendingRequests {
+                // AVPlayer can get stuck in waitingToMinimizeStalls with no pending requests.
+                // Seek slightly ahead to force it to reset its request state.
+                self.player.seek(to: self.player.currentTime() + CMTime(value: 5, timescale: 100))
+                self.player.play()
+            }
+        }
     }
 
     private func addPeriodicTimeObserver() {
