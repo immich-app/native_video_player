@@ -2,68 +2,41 @@ import AVFoundation
 import Foundation
 import UniformTypeIdentifiers
 
-/// Fulfils AVPlayer resource requests through a URLSession configured for mTLS.
-public final class VideoResourceLoader: NSObject, AVAssetResourceLoaderDelegate, URLSessionDataDelegate {
+/// Fulfils AVPlayer resource requests through a shared URLSession.
+/// On iOS 15+, uses per-task delegates so auth challenges fall through to the session delegate.
+/// On iOS < 15, `prepareAsset` returns nil so callers fall back to AVURLAsset with headers.
+public final class VideoResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
     public static let shared = VideoResourceLoader()
     private static let schemePrefix = "mtls-"
-    private static let maxRetries = 3
+    static let maxRetries = 3
 
-    public var clientCredential: URLCredential?
+    public var sharedSession: URLSession?
     private let loaderQueue = DispatchQueue(label: "video.loader")
-    private var session: URLSession!
-    private var pending = [Int: PendingRequest]()
-    private var taskByLoadingRequest = [ObjectIdentifier: Int]()
     private var currentHeaders = [String: String]()
+    private var activeTasks = [ObjectIdentifier: URLSessionDataTask]()
+    private let taskLock = NSLock()
 
-    private struct PendingRequest {
-        let loadingRequest: AVAssetResourceLoadingRequest
-        let task: URLSessionDataTask
-        let request: URLRequest
-        let retryCount: Int
+    public var isActive: Bool {
+        if #available(iOS 15.0, *) { return sharedSession != nil }
+        return false
     }
 
-    private override init() {
-        super.init()
-        let config = URLSessionConfiguration.ephemeral
-        config.httpMaximumConnectionsPerHost = 64
-        let delegateQueue = OperationQueue()
-        delegateQueue.underlyingQueue = loaderQueue
-        delegateQueue.maxConcurrentOperationCount = 1
-        session = URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
+    public var hasPendingRequests: Bool {
+        taskLock.lock()
+        defer { taskLock.unlock() }
+        return !activeTasks.isEmpty
     }
 
-    /// Creates an AVURLAsset configured to load through this resource loader.
-    /// Returns nil if the loader is not active.
     public func prepareAsset(url: URL, headers: [String: String]) -> AVURLAsset? {
-        guard clientCredential != nil,
-            var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-            let scheme = components.scheme else { return nil }
+        guard #available(iOS 15.0, *), sharedSession != nil,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme else { return nil }
         currentHeaders = headers
         components.scheme = Self.schemePrefix + scheme
         guard let customURL = components.url else { return nil }
         let asset = AVURLAsset(url: customURL)
         asset.resourceLoader.setDelegate(self, queue: loaderQueue)
         return asset
-    }
-
-    var hasPendingRequests: Bool {
-        loaderQueue.sync { !pending.isEmpty }
-    }
-
-    private func addPending(_ entry: PendingRequest) {
-        pending[entry.task.taskIdentifier] = entry
-        taskByLoadingRequest[ObjectIdentifier(entry.loadingRequest)] = entry.task.taskIdentifier
-    }
-    
-    @discardableResult private func removePending(for taskId: Int) -> PendingRequest? {
-        guard let entry = pending.removeValue(forKey: taskId) else { return nil }
-        taskByLoadingRequest.removeValue(forKey: ObjectIdentifier(entry.loadingRequest))
-        return entry
-    }
-    
-    @discardableResult private func removePending(for loadingRequest: AVAssetResourceLoadingRequest) -> PendingRequest? {
-        guard let taskId = taskByLoadingRequest.removeValue(forKey: ObjectIdentifier(loadingRequest)) else { return nil }
-        return pending.removeValue(forKey: taskId)
     }
 
     private func originalURL(from url: URL) -> URL? {
@@ -75,9 +48,11 @@ public final class VideoResourceLoader: NSObject, AVAssetResourceLoaderDelegate,
 
     public func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
                                shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
-        guard let url = loadingRequest.request.url, let originalURL = originalURL(from: url) else { return false }
+        guard #available(iOS 15.0, *), let session = sharedSession,
+              let url = loadingRequest.request.url, let originalURL = originalURL(from: url) else { return false }
 
         var request = URLRequest(url: originalURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
 
         for (key, value) in currentHeaders {
@@ -94,99 +69,113 @@ public final class VideoResourceLoader: NSObject, AVAssetResourceLoaderDelegate,
             }
         }
 
-        let task = session.dataTask(with: request)
-        addPending(PendingRequest(loadingRequest: loadingRequest, task: task, request: request, retryCount: 0))
-        task.resume()
+        startTask(on: session, request: request, loadingRequest: loadingRequest)
         return true
     }
 
     public func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
                                didCancel loadingRequest: AVAssetResourceLoadingRequest) {
-        guard let entry = removePending(for: loadingRequest) else { return }
-        entry.task.cancel()
+        taskLock.lock()
+        let task = activeTasks.removeValue(forKey: ObjectIdentifier(loadingRequest))
+        taskLock.unlock()
+        task?.cancel()
     }
 
-    public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
-                           didReceive response: URLResponse,
-                           completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        defer { completionHandler(.allow) }
+    @available(iOS 15.0, *)
+    fileprivate func startTask(on session: URLSession, request: URLRequest,
+                               loadingRequest: AVAssetResourceLoadingRequest, retryCount: Int = 0) {
+        let delegate = ResourceTaskDelegate(loadingRequest: loadingRequest, request: request,
+                                            retryCount: retryCount, loader: self)
+        let task = session.dataTask(with: request)
+        task.delegate = delegate
+        taskLock.lock()
+        activeTasks[ObjectIdentifier(loadingRequest)] = task
+        taskLock.unlock()
+        task.resume()
+    }
 
-        guard let entry = pending[dataTask.taskIdentifier],
-            let http = response as? HTTPURLResponse,
-            let contentInfo = entry.loadingRequest.contentInformationRequest else { return }
+    fileprivate func removeTask(for loadingRequest: AVAssetResourceLoadingRequest) {
+        taskLock.lock()
+        activeTasks.removeValue(forKey: ObjectIdentifier(loadingRequest))
+        taskLock.unlock()
+    }
+}
+
+// MARK: - Per-Task Delegate (auth challenges intentionally omitted → session delegate handles them)
+
+@available(iOS 15.0, *)
+private class ResourceTaskDelegate: NSObject, URLSessionDataDelegate {
+    let loadingRequest: AVAssetResourceLoadingRequest
+    var request: URLRequest
+    var retryCount: Int
+    private weak var loader: VideoResourceLoader?
+
+    init(loadingRequest: AVAssetResourceLoadingRequest, request: URLRequest,
+         retryCount: Int, loader: VideoResourceLoader) {
+        self.loadingRequest = loadingRequest
+        self.request = request
+        self.retryCount = retryCount
+        self.loader = loader
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        defer { completionHandler(.allow) }
+        guard let http = response as? HTTPURLResponse,
+              let contentInfo = loadingRequest.contentInformationRequest else { return }
 
         if let mimeType = http.value(forHTTPHeaderField: "Content-Type") {
             contentInfo.contentType = UTType(mimeType: mimeType)?.identifier
         }
-
         contentInfo.isByteRangeAccessSupported =
             http.statusCode == 206 || http.value(forHTTPHeaderField: "Accept-Ranges")?.contains("bytes") == true
-
         if let rangeHeader = http.value(forHTTPHeaderField: "Content-Range"),
-            let slashIndex = rangeHeader.lastIndex(of: "/"),
-            let total = Int64(rangeHeader[rangeHeader.index(after: slashIndex)...]) {
+           let slashIndex = rangeHeader.lastIndex(of: "/"),
+           let total = Int64(rangeHeader[rangeHeader.index(after: slashIndex)...]) {
             contentInfo.contentLength = total
         } else {
             contentInfo.contentLength = http.expectedContentLength
         }
 
-        // Per https://jaredsinclair.com/2016/09/03/implementing-avassetresourceload.html, we need to
-        // finish the content info request immediately without responding to the 2-byte data request.
-        removePending(for: dataTask.taskIdentifier)
-        entry.loadingRequest.finishLoading()
+        // Per https://jaredsinclair.com/2016/09/03/implementing-avassetresourceload.html, finish
+        // the content info request immediately without responding to the 2-byte data request.
+        finish()
         dataTask.cancel()
     }
 
-    public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let entry = pending[dataTask.taskIdentifier] else { return }
-        entry.loadingRequest.dataRequest?.respond(with: data)
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        loadingRequest.dataRequest?.respond(with: data)
     }
 
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let entry = removePending(for: task.taskIdentifier) else { return }
-        guard let error = error else {
-            return entry.loadingRequest.finishLoading()
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error = error else { return finish() }
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        guard retryCount < VideoResourceLoader.maxRetries, !loadingRequest.isCancelled else {
+            return finish(error: error)
         }
 
-        if entry.retryCount >= Self.maxRetries || entry.loadingRequest.isCancelled {
-            return entry.loadingRequest.finishLoading(with: error)
-        }
-
-        var retryRequest = entry.request
-        if let dataRequest = entry.loadingRequest.dataRequest,
-            dataRequest.currentOffset > dataRequest.requestedOffset {
+        if let dataRequest = loadingRequest.dataRequest,
+           dataRequest.currentOffset > dataRequest.requestedOffset {
             let offset = dataRequest.currentOffset
             if dataRequest.requestsAllDataToEndOfResource {
-                retryRequest.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
+                request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
             } else {
                 let end = dataRequest.requestedOffset + Int64(dataRequest.requestedLength) - 1
-                retryRequest.setValue("bytes=\(offset)-\(end)", forHTTPHeaderField: "Range")
+                request.setValue("bytes=\(offset)-\(end)", forHTTPHeaderField: "Range")
             }
         }
-        let newTask = session.dataTask(with: retryRequest)
-        addPending(PendingRequest(loadingRequest: entry.loadingRequest, task: newTask,
-                                    request: retryRequest, retryCount: entry.retryCount + 1))
-        newTask.resume()
+
+        retryCount += 1
+        guard let session = loader?.sharedSession else { return finish(error: error) }
+        loader?.startTask(on: session, request: request,
+                          loadingRequest: loadingRequest, retryCount: retryCount)
     }
 
-    public func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
-                           completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        handleChallenge(challenge, completionHandler: completionHandler)
-    }
-
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
-                           completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        handleChallenge(challenge, completionHandler: completionHandler)
-    }
-
-    private func handleChallenge(
-        _ challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodClientCertificate,
-            let clientCredential = clientCredential else {
-            return completionHandler(.performDefaultHandling, nil)
-        }
-        completionHandler(.useCredential, clientCredential)
+    private func finish(error: Error? = nil) {
+        loader?.removeTask(for: loadingRequest)
+        guard !loadingRequest.isCancelled else { return }
+        if let error = error { loadingRequest.finishLoading(with: error) }
+        else { loadingRequest.finishLoading() }
     }
 }

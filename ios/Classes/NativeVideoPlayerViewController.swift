@@ -239,7 +239,7 @@ extension NativeVideoPlayerViewController {
 
             if player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
                player.reasonForWaitingToPlay == .toMinimizeStalls,
-               VideoResourceLoader.shared.clientCredential != nil,
+               VideoResourceLoader.shared.isActive,
                !VideoResourceLoader.shared.hasPendingRequests {
                 // AVPlayer can get stuck in waitingToMinimizeStalls with no pending requests.
                 // Seek slightly ahead to force it to reset its request state.
