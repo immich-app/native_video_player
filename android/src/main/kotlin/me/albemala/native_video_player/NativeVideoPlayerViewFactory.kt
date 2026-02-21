@@ -23,7 +23,8 @@ class NativeVideoPlayerViewFactory(
         return NativeVideoPlayerViewController(
             messenger,
             viewId,
-            context
+            context,
+            dataSourceFactory = NativeVideoPlayerPlugin.dataSourceFactory,
         )
     }
 }
