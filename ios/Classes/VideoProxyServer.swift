@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UIKit
 
 @available(iOS 15.0, *)
 public final class VideoProxyServer: @unchecked Sendable {
@@ -11,12 +12,24 @@ public final class VideoProxyServer: @unchecked Sendable {
     private var port: UInt16 = 0
     private var activeConnections = Set<ProxyConnection>()
 
-    private init() {}
+    private init() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+    }
 
     public var isRunning: Bool { listener?.state == .ready }
 
+    @objc private func onForeground() {
+        guard session != nil else { return }
+        try? start()
+    }
+
     public func proxyURL(for originalURL: URL) -> URL? {
-        guard session != nil, let _ = try? start() else { return nil }
+        guard session != nil, (isRunning || (try? start()) != nil) else { return nil }
         guard let scheme = originalURL.scheme, let host = originalURL.host else { return nil }
         let hostPort = originalURL.port.map { "\(host):\($0)" } ?? host
         var components = URLComponents()
@@ -29,17 +42,17 @@ public final class VideoProxyServer: @unchecked Sendable {
     }
 
     private func start() throws {
-        guard !isRunning else { return }
         listener?.cancel()
         listener = nil
-        let nwListener = try NWListener(using: .tcp, on: .any)
+
+        let port = port > 0 ? NWEndpoint.Port(rawValue: port) ?? .any : .any
+        let nwListener = try NWListener(using: .tcp, on: port)
         let semaphore = DispatchSemaphore(value: 0)
         var startError: Error?
-        nwListener.stateUpdateHandler = { [weak self] state in
+        nwListener.stateUpdateHandler = { [weak self, weak nwListener] state in
             switch state {
-            case .ready: self?.port = nwListener.port?.rawValue ?? 0; semaphore.signal()
-            case .failed(let e): startError = e; semaphore.signal()
-            case .cancelled: self?.port = 0
+            case .ready: self?.port = nwListener?.port?.rawValue ?? 0; semaphore.signal()
+            case .failed(let e), .waiting(let e): startError = e; semaphore.signal()
             default: break
             }
         }
