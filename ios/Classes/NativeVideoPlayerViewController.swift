@@ -70,7 +70,7 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         removeOnVideoCompletedObserver()
         player.replaceCurrentItem(with: playerItem)
         addOnVideoCompletedObserver()
-        timeControlObserver = addTimeControlObserver()
+        timeControlObserver = addTimeControlObserver(currentItem: playerItem)
         api.onPlaybackReady()
         addPeriodicTimeObserver()
     }
@@ -233,14 +233,12 @@ extension NativeVideoPlayerViewController {
         )
     }
 
-    private func addTimeControlObserver() -> NSKeyValueObservation {
-        return player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
-            guard let self = self else { return }
-
-            if player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
-               player.reasonForWaitingToPlay == .toMinimizeStalls {
-                // AVPlayer can get stuck in waitingToMinimizeStalls with no pending requests.
-                self.player.play()
+    private func addTimeControlObserver(currentItem: AVPlayerItem) -> NSKeyValueObservation {
+        return currentItem.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] item, _ in
+            if item.isPlaybackLikelyToKeepUp,
+               self?.player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                // AVPlayer can sometimes get stuck
+                DispatchQueue.main.async { [weak self] in self?.player.play() }
             }
         }
     }
