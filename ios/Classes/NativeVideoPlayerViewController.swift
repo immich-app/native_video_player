@@ -58,8 +58,8 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         guard let uri = isUrl ? URL(string: sourcePath) : URL(fileURLWithPath: sourcePath) else { return }
 
         let videoAsset: AVAsset
-        if isUrl, let asset = VideoResourceLoader.shared.prepareAsset(url: uri, headers: videoSource.headers) {
-            videoAsset = asset
+        if isUrl, #available(iOS 15.0, *), let proxyURL = VideoProxyServer.shared.proxyURL(for: uri) {
+            videoAsset = AVURLAsset(url: proxyURL)
         } else if isUrl {
             videoAsset = AVURLAsset(url: uri, options: ["AVURLAssetHTTPHeaderFieldsKey": videoSource.headers])
         } else {
@@ -238,12 +238,8 @@ extension NativeVideoPlayerViewController {
             guard let self = self else { return }
 
             if player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
-               player.reasonForWaitingToPlay == .toMinimizeStalls,
-               VideoResourceLoader.shared.isActive,
-               !VideoResourceLoader.shared.hasPendingRequests {
+               player.reasonForWaitingToPlay == .toMinimizeStalls {
                 // AVPlayer can get stuck in waitingToMinimizeStalls with no pending requests.
-                // Seek slightly ahead to force it to reset its request state.
-                self.player.seek(to: self.player.currentTime() + CMTime(value: 5, timescale: 100))
                 self.player.play()
             }
         }
