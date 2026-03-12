@@ -61,7 +61,9 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         if isUrl, #available(iOS 15.0, *), let proxyURL = VideoProxyServer.shared.proxyURL(for: uri) {
             videoAsset = AVURLAsset(url: proxyURL)
         } else if isUrl {
-            videoAsset = AVURLAsset(url: uri, options: ["AVURLAssetHTTPHeaderFieldsKey": videoSource.headers])
+            var headers = HTTPCookie.requestHeaderFields(with: SwiftNativeVideoPlayerPlugin.cookieStorage?.cookies(for: uri) ?? [])
+            headers.merge(videoSource.headers) { _, new in new }
+            videoAsset = AVURLAsset(url: uri, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
             videoAsset = AVAsset(url: uri)
         }
