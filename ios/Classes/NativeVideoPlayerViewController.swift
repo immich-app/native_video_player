@@ -69,7 +69,7 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         }
 
         let playerItem = AVPlayerItem(asset: videoAsset)
-        playerItem.preferredForwardBufferDuration = 5
+        playerItem.preferredForwardBufferDuration = 10
         removeOnVideoCompletedObserver()
         player.replaceCurrentItem(with: playerItem)
         addOnVideoCompletedObserver()
