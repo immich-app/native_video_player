@@ -4,25 +4,21 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.view.SurfaceView
-import android.view.Gravity
 import android.view.View
-import android.widget.FrameLayout
+import android.widget.RelativeLayout
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.ui.AspectRatioFrameLayout
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.platform.PlatformView
 import me.albemala.native_video_player.platform_interface.*
 
-@OptIn(UnstableApi::class)
 class NativeVideoPlayerViewController(
     messenger: BinaryMessenger,
     viewId: Int,
@@ -35,8 +31,7 @@ class NativeVideoPlayerViewController(
 
     private val player: ExoPlayer
     private val view: SurfaceView
-    private val container: FrameLayout
-    private val aspectRatioLayout: AspectRatioFrameLayout
+    private val relativeLayout: RelativeLayout
 
     private val positionUpdateHandler = Handler(Looper.getMainLooper())
     private var positionUpdateRunnable: Runnable? = null
@@ -49,31 +44,27 @@ class NativeVideoPlayerViewController(
 
         view = SurfaceView(context)
         view.setBackgroundColor(0)
-        view.layoutParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
+        val layoutParams = RelativeLayout.LayoutParams(
+            RelativeLayout.LayoutParams.MATCH_PARENT,
+            RelativeLayout.LayoutParams.MATCH_PARENT
         )
+        layoutParams.addRule(RelativeLayout.ALIGN_PARENT_LEFT)
+        layoutParams.addRule(RelativeLayout.ALIGN_PARENT_TOP)
+        layoutParams.addRule(RelativeLayout.ALIGN_PARENT_RIGHT)
+        layoutParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+        view.layoutParams = layoutParams
         player.setVideoSurfaceView(view)
 
-        aspectRatioLayout = AspectRatioFrameLayout(context)
-        aspectRatioLayout.visibility = View.INVISIBLE
-        aspectRatioLayout.layoutParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            Gravity.CENTER
+        relativeLayout = RelativeLayout(context)
+        relativeLayout.layoutParams = RelativeLayout.LayoutParams(
+            RelativeLayout.LayoutParams.MATCH_PARENT,
+            RelativeLayout.LayoutParams.MATCH_PARENT
         )
-        aspectRatioLayout.addView(view)
-
-        container = FrameLayout(context)
-        container.layoutParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        )
-        container.addView(aspectRatioLayout)
+        relativeLayout.addView(view)
     }
 
     override fun getView(): View {
-        return container
+        return relativeLayout
     }
 
     override fun dispose() {
@@ -83,6 +74,7 @@ class NativeVideoPlayerViewController(
         player.release()
     }
 
+    @OptIn(UnstableApi::class)
     override fun loadVideoSource(videoSource: VideoSource) {
         val mediaItem = MediaItem.fromUri(videoSource.path)
         when (videoSource.type) {
@@ -146,16 +138,6 @@ class NativeVideoPlayerViewController(
 
         if (state == Player.STATE_ENDED) {
             return api.onPlaybackEnded()
-        }
-    }
-
-    override fun onVideoSizeChanged(videoSize: VideoSize) {
-        if (videoSize.height <= 0) return
-        aspectRatioLayout.setAspectRatio(
-            (videoSize.width * videoSize.pixelWidthHeightRatio) / videoSize.height
-        )
-        if (aspectRatioLayout.visibility != View.VISIBLE) {
-            aspectRatioLayout.post { aspectRatioLayout.visibility = View.VISIBLE }
         }
     }
 
