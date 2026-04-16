@@ -17,7 +17,7 @@ class NativeVideoPlayerView: UIView {
 
         backgroundColor = UIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0)
 
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer.videoGravity = .resize
         layer.addSublayer(playerLayer)
     }
 
