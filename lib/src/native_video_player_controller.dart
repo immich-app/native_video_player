@@ -47,6 +47,11 @@ class NativeVideoPlayerController with ChangeNotifier {
   /// Emitted when the video has finished playing.
   final onPlaybackEnded = ChangeNotifier();
 
+  /// Emitted when the player resolves the URL it is actually playing from.
+  /// For HLS sources this is the variant playlist URL; reset to null on
+  /// [loadVideoSource].
+  final onPlaybackSourceResolved = ValueNotifier<String?>(null);
+
   /// Emitted when a playback error occurs
   /// or when it's not possible to load the video source
   final onError = ValueNotifier<String?>(null);
@@ -76,6 +81,7 @@ class NativeVideoPlayerController with ChangeNotifier {
       onPlaybackReady: _onPlaybackReady,
       onPlaybackEnded: _onPlaybackEnded,
       onPlaybackPositionChanged: _onPlaybackPositionChanged,
+      onPlaybackSourceResolved: _onPlaybackSourceResolved,
       onError: _onError,
     );
   }
@@ -96,6 +102,11 @@ class NativeVideoPlayerController with ChangeNotifier {
     onError.value = message;
   }
 
+  // ignore: use_setters_to_change_properties
+  void _onPlaybackSourceResolved(String url) {
+    onPlaybackSourceResolved.value = url;
+  }
+
   // NOTE: For internal use only.
   @override
   @protected
@@ -109,6 +120,7 @@ class NativeVideoPlayerController with ChangeNotifier {
   /// NOTE: This method might throw an exception if the video source is invalid.
   Future<void> loadVideoSource(VideoSource videoSource) async {
     await stop();
+    onPlaybackSourceResolved.value = null;
     await _api.loadVideoSource(videoSource);
     _videoSource = videoSource;
   }

@@ -2,10 +2,86 @@ import Foundation
 import Network
 import UIKit
 
+extension RandomAccessCollection where Element: Comparable, Index == Int {
+    func firstIndex(greaterThan key: Element) -> Index? {
+        var lowerBound = startIndex
+        var upperBound = endIndex
+        while lowerBound < upperBound {
+            let midIndex = lowerBound + (upperBound - lowerBound) / 2
+            if self[midIndex] > key {
+                upperBound = midIndex
+            } else {
+                lowerBound = midIndex + 1
+            }
+        }
+        return lowerBound < endIndex ? lowerBound : nil
+    }
+}
+
+/// A proxied HLS playback: its position provider plus the segment timelines parsed
+/// from its media playlists, keyed by variant directory. Doubles as the
+/// registration's ownership token.
+final class PlaybackRegistration {
+    fileprivate let key: String
+    fileprivate let position: () -> TimeInterval?
+    fileprivate var timelines: [String: [Double]] = [:]
+
+    fileprivate init(key: String, position: @escaping () -> TimeInterval?) {
+        self.key = key
+        self.position = position
+    }
+}
+
 @available(iOS 15.0, *)
 public final class VideoProxyServer: @unchecked Sendable {
     public static let shared = VideoProxyServer()
+    /// Session for upstream requests. Must use a serial delegate queue as per-request relay state is confined to it.
     public var session: URLSession?
+
+    /// Keyed by the registered playlist's directory; sub-requests resolve by longest prefix. Only accessed on `queue`.
+    private var registrations: [String: PlaybackRegistration] = [:]
+
+    func registerPlayback(playlist url: URL, position: @escaping () -> TimeInterval?) -> PlaybackRegistration {
+        let registration = PlaybackRegistration(key: url.deletingLastPathComponent().path, position: position)
+        queue.async { self.registrations[registration.key] = registration }
+        return registration
+    }
+
+    func unregisterPlayback(_ registration: PlaybackRegistration) {
+        queue.async {
+            if self.registrations[registration.key] === registration {
+                self.registrations.removeValue(forKey: registration.key)
+            }
+        }
+    }
+
+    /// Longest-prefix match of a sub-request path to its playback. Only call on `queue`.
+    fileprivate func registration(forPath path: String) -> PlaybackRegistration? {
+        var best: (key: String, registration: PlaybackRegistration)?
+        for (key, registration) in registrations where path.hasPrefix(key) {
+            if best == nil || key.count > best!.key.count {
+                best = (key, registration)
+            }
+        }
+        return best?.registration
+    }
+
+    fileprivate func storeTimeline(_ segmentEnds: [Double], forPlaylist url: URL) {
+        let playlistDir = url.deletingLastPathComponent().path
+        queue.async {
+            self.registration(forPath: playlistDir)?.timelines[playlistDir] = segmentEnds
+        }
+    }
+
+    /// The segment containing the playback position, per the timeline of the media. Only call on `queue`.
+    fileprivate func segmentHint(for url: URL) -> Int? {
+        guard let registration = registration(forPath: url.path),
+              let position = registration.position(),
+              let ends = registration.timelines[url.deletingLastPathComponent().path], !ends.isEmpty
+        else { return nil }
+        if position <= 0 { return 0 }
+        return ends.firstIndex(greaterThan: position) ?? ends.count - 1
+    }
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "video.proxy", qos: .userInitiated)
@@ -46,7 +122,9 @@ public final class VideoProxyServer: @unchecked Sendable {
         listener = nil
 
         let port = port > 0 ? NWEndpoint.Port(rawValue: port) ?? .any : .any
-        let nwListener = try NWListener(using: .tcp, on: port)
+        let parameters = NWParameters.tcp
+        parameters.requiredInterfaceType = .loopback
+        let nwListener = try NWListener(using: parameters, on: port)
         let semaphore = DispatchSemaphore(value: 0)
         var startError: Error?
         nwListener.stateUpdateHandler = { [weak self, weak nwListener] state in
@@ -94,8 +172,11 @@ private final class ProxyConnection: NSObject, URLSessionDataDelegate {
     private var buffer = Data()
     private var currentTask: URLSessionDataTask?
     private var headersSent = false
+    private var captureBuffer: Data?
     private static let headerEnd = Data("\r\n\r\n".utf8)
     private static let skipHeaders: Set<String> = ["host", "connection", "proxy-connection", "keep-alive"]
+    private static let extinfTagLength = 8
+    private static let extinfTag: UInt64 = Array("#EXTINF:".utf8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
 
     init(connection: NWConnection, server: VideoProxyServer, queue: DispatchQueue) {
         self.connection = connection
@@ -165,6 +246,15 @@ private final class ProxyConnection: NSObject, URLSessionDataDelegate {
             guard !Self.skipHeaders.contains(key.lowercased()) else { continue }
             request.setValue(parts[1].trimmingCharacters(in: .whitespaces), forHTTPHeaderField: key)
         }
+        if url.lastPathComponent == "init.mp4", let segment = server?.segmentHint(for: url) {
+            request.setValue(String(segment), forHTTPHeaderField: "x-immich-hls-msn")
+        } else if url.path.hasSuffix(".m3u8"), let registration = server?.registration(forPath: url.path) {
+            if let position = registration.position(), position > 0 {
+                request.setValue(String(position), forHTTPHeaderField: "x-immich-hls-pos")
+            }
+            // Force identity so the captured and parsed bytes are never content-encoded.
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        }
         return request
     }
 
@@ -188,15 +278,27 @@ private final class ProxyConnection: NSObject, URLSessionDataDelegate {
         }
         head.append(contentsOf: "\r\n".utf8)
         headersSent = true
+        // Capture playlists to parse timelines
+        if http.statusCode == 200, dataTask.originalRequest?.url?.path.hasSuffix(".m3u8") == true {
+            captureBuffer = Data()
+        }
         connection.send(content: head, completion: .contentProcessed { _ in })
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        captureBuffer?.append(data)
         connection.send(content: data, completion: .contentProcessed { _ in })
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let captured = captureBuffer, error == nil, let url = task.originalRequest?.url {
+            let segmentEnds = Self.parseSegmentEnds(captured)
+            if !segmentEnds.isEmpty {
+                server?.storeTimeline(segmentEnds, forPlaylist: url)
+            }
+        }
+        captureBuffer = nil
         if let error = error {
             if (error as NSError).code == NSURLErrorCancelled { return }
             if !headersSent { return sendError(502) }
@@ -204,6 +306,43 @@ private final class ProxyConnection: NSObject, URLSessionDataDelegate {
         }
         currentTask = nil
         self.readRequest()
+    }
+
+    /// Cumulative segment end times from `#EXTINF:` lines.
+    private static func parseSegmentEnds(_ data: Data) -> [Double] {
+        var ends: [Double] = []
+        ends.reserveCapacity(data.count / 24)
+        var cumulative = 0.0
+        data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            guard let base = bytes.baseAddress else { return } // empty Data
+            var i = 0
+            while i < bytes.count {
+                if isExtinfLine(bytes, at: i), let duration = parseDuration(bytes, at: i + extinfTagLength) {
+                    cumulative += duration
+                    ends.append(cumulative)
+                }
+                // Skip to the next line
+                guard let newline = memchr(base + i, Int32(UInt8(ascii: "\n")), bytes.count - i) else { break }
+                i = UnsafeRawPointer(newline) - base + 1
+            }
+        }
+        return ends
+    }
+
+    private static func isExtinfLine(_ bytes: UnsafeRawBufferPointer, at i: Int) -> Bool {
+        i + extinfTagLength <= bytes.count && bytes.loadUnaligned(fromByteOffset: i, as: UInt64.self) == extinfTag
+    }
+
+    /// Duration between `i` and the next `,`/line end.
+    private static func parseDuration(_ bytes: UnsafeRawBufferPointer, at i: Int) -> Double? {
+        var j = i
+        while j < bytes.count, bytes[j] != UInt8(ascii: ","), bytes[j] != UInt8(ascii: "\n"), bytes[j] != UInt8(ascii: "\r") {
+            j += 1
+        }
+        guard let value = Double(String(decoding: bytes[i..<j], as: UTF8.self)), value.isFinite, value >= 0 else {
+            return nil
+        }
+        return value
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
