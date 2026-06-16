@@ -8,7 +8,6 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     private let playerView: NativeVideoPlayerView
     private var loop = false
     private var lastPosition: Int64 = -1
-    private var lastResolvedUri: String?
     private var playbackRegistration: PlaybackRegistration?
     private var timeObserver: Any?
     private var timeControlObserver: NSKeyValueObservation?
@@ -49,7 +48,6 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
         player.removeObserver(self, forKeyPath: "status")
         timeControlObserver?.invalidate()
         removeOnVideoCompletedObserver()
-        removeAccessLogObserver()
         removePeriodicTimeObserver()
         unregisterPlayback()
 
@@ -73,10 +71,16 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         if isUrl, #available(iOS 15.0, *), let proxyURL = VideoProxyServer.shared.proxyURL(for: uri) {
             // Per-request headers like segment hints require routing through the proxy.
             if uri.path.hasSuffix(".m3u8") {
-                playbackRegistration = VideoProxyServer.shared.registerPlayback(playlist: uri) { [weak player] in
-                    guard let time = player?.currentTime(), time.isNumeric else { return nil }
-                    return time.seconds
-                }
+                playbackRegistration = VideoProxyServer.shared.registerPlayback(
+                    playlist: uri,
+                    position: { [weak player] in
+                        guard let time = player?.currentTime(), time.isNumeric else { return nil }
+                        return time.seconds
+                    },
+                    onResolved: { [weak self] url in
+                        self?.api.onPlaybackSourceResolved(url.absoluteString)
+                    }
+                )
             }
             videoAsset = AVURLAsset(url: proxyURL)
         } else if isUrl {
@@ -92,13 +96,10 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
             videoAsset = AVAsset(url: uri)
         }
 
-        lastResolvedUri = nil
         let playerItem = AVPlayerItem(asset: videoAsset)
         removeOnVideoCompletedObserver()
-        removeAccessLogObserver()
         player.replaceCurrentItem(with: playerItem)
         addOnVideoCompletedObserver()
-        addAccessLogObserver()
         timeControlObserver = addTimeControlObserver(currentItem: playerItem)
         api.onPlaybackReady()
         addPeriodicTimeObserver()
@@ -267,33 +268,6 @@ extension NativeVideoPlayerViewController {
         NotificationCenter.default.removeObserver(
             self,
             name: .AVPlayerItemDidPlayToEndTime,
-            object: player.currentItem
-        )
-    }
-
-    @objc
-    private func onAccessLogEntry(notification: NSNotification) {
-        guard let item = notification.object as? AVPlayerItem,
-              let uri = item.accessLog()?.events.last?.uri,
-              uri != self.lastResolvedUri
-        else { return }
-        self.lastResolvedUri = uri
-        self.api.onPlaybackSourceResolved(uri)
-    }
-
-    private func addAccessLogObserver() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(onAccessLogEntry(notification:)),
-            name: .AVPlayerItemNewAccessLogEntry,
-            object: player.currentItem
-        )
-    }
-
-    private func removeAccessLogObserver() {
-        NotificationCenter.default.removeObserver(
-            self,
-            name: .AVPlayerItemNewAccessLogEntry,
             object: player.currentItem
         )
     }

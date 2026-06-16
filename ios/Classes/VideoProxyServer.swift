@@ -24,11 +24,15 @@ extension RandomAccessCollection where Element: Comparable, Index == Int {
 final class PlaybackRegistration {
     fileprivate let key: String
     fileprivate let position: () -> TimeInterval?
+    /// Called once with the upstream URL of the first media playlist seen for this playback
+    fileprivate let onResolved: (URL) -> Void
+    fileprivate var resolved = false
     fileprivate var timelines: [String: [Double]] = [:]
 
-    fileprivate init(key: String, position: @escaping () -> TimeInterval?) {
+    fileprivate init(key: String, position: @escaping () -> TimeInterval?, onResolved: @escaping (URL) -> Void) {
         self.key = key
         self.position = position
+        self.onResolved = onResolved
     }
 }
 
@@ -41,8 +45,16 @@ public final class VideoProxyServer: @unchecked Sendable {
     /// Keyed by the registered playlist's directory; sub-requests resolve by longest prefix. Only accessed on `queue`.
     private var registrations: [String: PlaybackRegistration] = [:]
 
-    func registerPlayback(playlist url: URL, position: @escaping () -> TimeInterval?) -> PlaybackRegistration {
-        let registration = PlaybackRegistration(key: url.deletingLastPathComponent().path, position: position)
+    func registerPlayback(
+        playlist url: URL,
+        position: @escaping () -> TimeInterval?,
+        onResolved: @escaping (URL) -> Void
+    ) -> PlaybackRegistration {
+        let registration = PlaybackRegistration(
+            key: url.deletingLastPathComponent().path,
+            position: position,
+            onResolved: onResolved
+        )
         queue.async { self.registrations[registration.key] = registration }
         return registration
     }
@@ -69,7 +81,12 @@ public final class VideoProxyServer: @unchecked Sendable {
     fileprivate func storeTimeline(_ segmentEnds: [Double], forPlaylist url: URL) {
         let playlistDir = url.deletingLastPathComponent().path
         queue.async {
-            self.registration(forPath: playlistDir)?.timelines[playlistDir] = segmentEnds
+            guard let registration = self.registration(forPath: playlistDir) else { return }
+            registration.timelines[playlistDir] = segmentEnds
+            if !registration.resolved {
+                registration.resolved = true
+                registration.onResolved(url)
+            }
         }
     }
 
