@@ -78,7 +78,10 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
                         return time.seconds
                     },
                     onResolved: { [weak self] url in
-                        self?.api.onPlaybackSourceResolved(url.absoluteString)
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self, let currentItem = self.player.currentItem else { return }
+                            self.api.onPlaybackSourceResolved(url.absoluteString)
+                        }
                     }
                 )
             }
