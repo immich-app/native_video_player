@@ -21,7 +21,7 @@ class NativeVideoPlayerView extends StatefulWidget {
   });
 
   @override
-  _NativeVideoPlayerViewState createState() => _NativeVideoPlayerViewState();
+  State<NativeVideoPlayerView> createState() => _NativeVideoPlayerViewState();
 }
 
 class _NativeVideoPlayerViewState extends State<NativeVideoPlayerView> {
@@ -37,14 +37,7 @@ class _NativeVideoPlayerViewState extends State<NativeVideoPlayerView> {
   @override
   Widget build(BuildContext context) {
     /// RepaintBoundary is a widget that isolates repaints
-    return RepaintBoundary(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          print('[nvp-size] UiKitView constraints=$constraints');
-          return _buildNativeView();
-        },
-      ),
-    );
+    return RepaintBoundary(child: _buildNativeView());
   }
 
   Widget _buildNativeView() {

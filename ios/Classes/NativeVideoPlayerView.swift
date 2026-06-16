@@ -29,6 +29,5 @@ class NativeVideoPlayerView: UIView {
         super.layoutSubviews()
         playerLayer.frame = bounds
         playerLayer.removeAllAnimations()
-        print("[nvp-size] view.bounds=\(bounds) layer.frame=\(playerLayer.frame) screen.scale=\(UIScreen.main.scale)")
     }
 }
