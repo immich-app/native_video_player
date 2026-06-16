@@ -28,7 +28,7 @@ class NativeVideoPlayerApi {
     _channel.setMethodCallHandler(null);
   }
 
-  Future<dynamic> _handleMethodCall(MethodCall call) {
+  Future<void> _handleMethodCall(MethodCall call) {
     switch (call.method) {
       case 'onPlaybackReady':
         onPlaybackReady();
@@ -45,8 +45,10 @@ class NativeVideoPlayerApi {
         // final errorMessage = call.arguments['errorMessage'] as String;
         final message = call.arguments as String;
         onError(message);
+      default:
+        throw UnsupportedError('Unrecognized method ${call.method}');
     }
-    throw UnsupportedError('Unrecognized method ${call.method}');
+    return Future.value();
   }
 
   Future<void> loadVideoSource(VideoSource videoSource) async {
