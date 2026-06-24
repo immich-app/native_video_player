@@ -322,8 +322,12 @@ extension NativeVideoPlayerViewController {
         metricsTask?.cancel()
         metricsTask = Task { [weak playerItem] in
             guard let playerItem else { return }
-            for await event in playerItem.allMetrics() {
-                NativeVideoPlayerViewController.logMetricEvent(event)
+            do {
+                for try await event in playerItem.allMetrics() {
+                    NativeVideoPlayerViewController.logMetricEvent(event)
+                }
+            } catch {
+                print("[AVMetrics] stream ended with error: \(error)")
             }
         }
     }
