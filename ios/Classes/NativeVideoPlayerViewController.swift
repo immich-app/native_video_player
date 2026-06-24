@@ -11,6 +11,7 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     private var playbackRegistration: PlaybackRegistration?
     private var timeObserver: Any?
     private var timeControlObserver: NSKeyValueObservation?
+    private var metricsTask: Task<Void, Never>?
 
     private func unregisterPlayback() {
         if #available(iOS 15.0, *), let registration = playbackRegistration {
@@ -47,6 +48,7 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     deinit {
         player.removeObserver(self, forKeyPath: "status")
         timeControlObserver?.invalidate()
+        metricsTask?.cancel()
         removeOnVideoCompletedObserver()
         removePeriodicTimeObserver()
         unregisterPlayback()
@@ -102,6 +104,9 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         let playerItem = AVPlayerItem(asset: videoAsset)
         removeOnVideoCompletedObserver()
         player.replaceCurrentItem(with: playerItem)
+        if #available(iOS 18.0, *) {
+            observeMetrics(for: playerItem)
+        }
         addOnVideoCompletedObserver()
         timeControlObserver = addTimeControlObserver(currentItem: playerItem)
         api.onPlaybackReady()
@@ -305,5 +310,26 @@ extension NativeVideoPlayerViewController {
             player.removeTimeObserver(observer)
             timeObserver = nil
         }
+    }
+}
+
+// MARK: - AVMetrics debug logging
+
+@available(iOS 18.0, *)
+extension NativeVideoPlayerViewController {
+    /// DEBUG: subscribe to every AVMetricEvent emitted for the given item and log it.
+    func observeMetrics(for playerItem: AVPlayerItem) {
+        metricsTask?.cancel()
+        metricsTask = Task { [weak playerItem] in
+            guard let playerItem else { return }
+            for await event in playerItem.allMetrics() {
+                NativeVideoPlayerViewController.logMetricEvent(event)
+            }
+        }
+    }
+
+    private static func logMetricEvent(_ event: AVMetricEvent) {
+        let type = String(describing: Swift.type(of: event))
+        print("[AVMetrics] \(type) date=\(event.date) \(String(reflecting: event))")
     }
 }
