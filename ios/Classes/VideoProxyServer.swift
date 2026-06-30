@@ -336,7 +336,7 @@ private final class ProxyConnection: NSObject {
         if url.lastPathComponent == "init.mp4", let segment = server?.segmentHint(for: url) {
             request.setValue(String(segment), forHTTPHeaderField: "x-immich-hls-msn")
         } else if url.path.hasSuffix(".m3u8"), let registration = server?.registration(forPath: url.path) {
-            if let position = registration.position(), position > 0 {
+            if let position = registration.position(), position >= 0 {
                 request.setValue(String(position), forHTTPHeaderField: "x-immich-hls-pos")
             }
             // Force identity so the captured and parsed bytes are never content-encoded.
