@@ -8,8 +8,17 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     private let playerView: NativeVideoPlayerView
     private var loop = false
     private var lastPosition: Int64 = -1
+    private var playbackRegistration: PlaybackRegistration?
     private var timeObserver: Any?
     private var timeControlObserver: NSKeyValueObservation?
+    private var metricsTask: Task<Void, Never>?
+
+    private func unregisterPlayback() {
+        if #available(iOS 15.0, *), let registration = playbackRegistration {
+            VideoProxyServer.shared.unregisterPlayback(registration)
+        }
+        playbackRegistration = nil
+    }
 
     init(
         messenger: FlutterBinaryMessenger,
@@ -39,8 +48,10 @@ public class NativeVideoPlayerViewController: NSObject, FlutterPlatformView {
     deinit {
         player.removeObserver(self, forKeyPath: "status")
         timeControlObserver?.invalidate()
+        metricsTask?.cancel()
         removeOnVideoCompletedObserver()
         removePeriodicTimeObserver()
+        unregisterPlayback()
 
         player.replaceCurrentItem(with: nil)
     }
@@ -56,14 +67,36 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         let isUrl = videoSource.type == .network
         let sourcePath = videoSource.path
         guard let uri = isUrl ? URL(string: sourcePath) : URL(fileURLWithPath: sourcePath) else { return }
+        unregisterPlayback()
 
         let videoAsset: AVAsset
         if isUrl, #available(iOS 15.0, *), let proxyURL = VideoProxyServer.shared.proxyURL(for: uri) {
+            // Per-request headers like segment hints require routing through the proxy.
+            if uri.path.hasSuffix(".m3u8") {
+                playbackRegistration = VideoProxyServer.shared.registerPlayback(
+                    playlist: uri,
+                    position: { [weak player] in
+                        guard let time = player?.currentTime(), time.isNumeric else { return nil }
+                        return time.seconds
+                    },
+                    onResolved: { [weak self] url in
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self, let currentItem = self.player.currentItem else { return }
+                            self.api.onPlaybackSourceResolved(url.absoluteString)
+                        }
+                    }
+                )
+            }
             videoAsset = AVURLAsset(url: proxyURL)
         } else if isUrl {
-            var headers = HTTPCookie.requestHeaderFields(with: SwiftNativeVideoPlayerPlugin.cookieStorage?.cookies(for: uri) ?? [])
-            headers.merge(videoSource.headers) { _, new in new }
-            videoAsset = AVURLAsset(url: uri, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            var options: [String: Any] = [:]
+            if let cookies = SwiftNativeVideoPlayerPlugin.cookieStorage?.cookies(for: uri), !cookies.isEmpty {
+                options[AVURLAssetHTTPCookiesKey] = cookies
+            }
+            if !videoSource.headers.isEmpty {
+                options["AVURLAssetHTTPHeaderFieldsKey"] = videoSource.headers
+            }
+            videoAsset = AVURLAsset(url: uri, options: options)
         } else {
             videoAsset = AVAsset(url: uri)
         }
@@ -71,6 +104,9 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
         let playerItem = AVPlayerItem(asset: videoAsset)
         removeOnVideoCompletedObserver()
         player.replaceCurrentItem(with: playerItem)
+        if #available(iOS 18.0, *) {
+            observeMetrics(for: playerItem)
+        }
         addOnVideoCompletedObserver()
         timeControlObserver = addTimeControlObserver(currentItem: playerItem)
         api.onPlaybackReady()
@@ -95,13 +131,22 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
                 async let d = asset.load(.duration)
                 async let t = asset.loadTracks(withMediaType: .video)
 
-                let duration = try await d
-                let size = try await t.first?.load(.naturalSize) ?? .zero
+                var duration = try await d
+                var size = try await t.first?.load(.naturalSize) ?? .zero
+
+                // HLS assets report an indefinite duration and expose no tracks;
+                // fall back to the player item, which reflects the loaded playlist.
+                if !duration.isNumeric, let itemDuration = player.currentItem?.duration, itemDuration.isNumeric {
+                    duration = itemDuration
+                }
+                if size == .zero, let presentationSize = player.currentItem?.presentationSize {
+                    size = presentationSize
+                }
 
                 let info = VideoInfo(
                     height: Int(size.height),
                     width: Int(size.width),
-                    duration: Int64(duration.seconds * 1000)
+                    duration: duration.isNumeric ? Int64(duration.seconds * 1000) : 0
                 )
                 completion(info)
             } catch {
@@ -117,7 +162,7 @@ extension NativeVideoPlayerViewController: NativeVideoPlayerApiDelegate {
 
         asset.loadValuesAsynchronously(forKeys: ["duration", "tracks"]) {
             let duration: Int64
-            if asset.statusOfValue(forKey: "duration", error: nil) == .loaded {
+            if asset.statusOfValue(forKey: "duration", error: nil) == .loaded, asset.duration.isNumeric {
                 duration = Int64(asset.duration.seconds * 1000)
             } else {
                 duration = 0
@@ -265,5 +310,30 @@ extension NativeVideoPlayerViewController {
             player.removeTimeObserver(observer)
             timeObserver = nil
         }
+    }
+}
+
+// MARK: - AVMetrics debug logging
+
+@available(iOS 18.0, *)
+extension NativeVideoPlayerViewController {
+    /// DEBUG: subscribe to every AVMetricEvent emitted for the given item and log it.
+    func observeMetrics(for playerItem: AVPlayerItem) {
+        metricsTask?.cancel()
+        metricsTask = Task { [weak playerItem] in
+            guard let playerItem else { return }
+            do {
+                for try await event in playerItem.allMetrics() {
+                    NativeVideoPlayerViewController.logMetricEvent(event)
+                }
+            } catch {
+                print("[AVMetrics] stream ended with error: \(error)")
+            }
+        }
+    }
+
+    private static func logMetricEvent(_ event: AVMetricEvent) {
+        let type = String(describing: Swift.type(of: event))
+        print("[AVMetrics] \(type) date=\(event.date) \(String(reflecting: event))")
     }
 }

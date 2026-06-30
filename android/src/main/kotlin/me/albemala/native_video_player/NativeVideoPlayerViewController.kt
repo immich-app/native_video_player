@@ -7,13 +7,17 @@ import android.view.SurfaceView
 import android.view.View
 import android.widget.RelativeLayout
 import androidx.annotation.OptIn
+import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsManifest
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.platform.PlatformView
@@ -36,6 +40,7 @@ class NativeVideoPlayerViewController(
     private val positionUpdateHandler = Handler(Looper.getMainLooper())
     private var positionUpdateRunnable: Runnable? = null
     private var lastPosition = -1L
+    private var lastResolvedUrl: String? = null
 
     init {
         api.delegate = this
@@ -76,13 +81,19 @@ class NativeVideoPlayerViewController(
 
     @OptIn(UnstableApi::class)
     override fun loadVideoSource(videoSource: VideoSource) {
+        lastResolvedUrl = null
         val mediaItem = MediaItem.fromUri(videoSource.path)
         when (videoSource.type) {
             VideoSourceType.Asset, VideoSourceType.File -> player.setMediaItem(mediaItem)
             VideoSourceType.Network -> {
                 val dataSource = dataSourceFactory?.invoke(videoSource.headers)
                     ?: DefaultHttpDataSource.Factory().setDefaultRequestProperties(videoSource.headers)
-                val mediaSource = ProgressiveMediaSource.Factory(dataSource).createMediaSource(mediaItem)
+                val isHls = Uri.parse(videoSource.path).path?.endsWith(".m3u8") == true
+                val mediaSource = if (isHls) {
+                    HlsMediaSource.Factory(dataSource).createMediaSource(mediaItem)
+                } else {
+                    ProgressiveMediaSource.Factory(dataSource).createMediaSource(mediaItem)
+                }
                 player.setMediaSource(mediaSource)
             }
         }
@@ -138,6 +149,16 @@ class NativeVideoPlayerViewController(
 
         if (state == Player.STATE_ENDED) {
             return api.onPlaybackEnded()
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+        val manifest = player.currentManifest as? HlsManifest ?: return
+        val url = manifest.mediaPlaylist.baseUri
+        if (url != lastResolvedUrl) {
+            lastResolvedUrl = url
+            api.onPlaybackSourceResolved(url)
         }
     }
 

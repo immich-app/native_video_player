@@ -7,6 +7,7 @@ class NativeVideoPlayerApi {
   final void Function() onPlaybackReady;
   final void Function() onPlaybackEnded;
   final void Function(int) onPlaybackPositionChanged;
+  final void Function(String) onPlaybackSourceResolved;
   final void Function(String?) onError;
   late final MethodChannel _channel;
 
@@ -15,6 +16,7 @@ class NativeVideoPlayerApi {
     required this.onPlaybackReady,
     required this.onPlaybackEnded,
     required this.onPlaybackPositionChanged,
+    required this.onPlaybackSourceResolved,
     required this.onError,
   }) {
     final name = 'me.albemala.native_video_player.api.$viewId';
@@ -26,7 +28,7 @@ class NativeVideoPlayerApi {
     _channel.setMethodCallHandler(null);
   }
 
-  Future<dynamic> _handleMethodCall(MethodCall call) {
+  Future<void> _handleMethodCall(MethodCall call) {
     switch (call.method) {
       case 'onPlaybackReady':
         onPlaybackReady();
@@ -35,13 +37,18 @@ class NativeVideoPlayerApi {
       case 'onPlaybackPositionChanged':
         final position = call.arguments as int;
         onPlaybackPositionChanged(position);
+      case 'onPlaybackSourceResolved':
+        final url = call.arguments as String;
+        onPlaybackSourceResolved(url);
       case 'onError':
         // final errorCode = call.arguments['errorCode'] as int;
         // final errorMessage = call.arguments['errorMessage'] as String;
         final message = call.arguments as String;
         onError(message);
+      default:
+        throw UnsupportedError('Unrecognized method ${call.method}');
     }
-    throw UnsupportedError('Unrecognized method ${call.method}');
+    return Future.value();
   }
 
   Future<void> loadVideoSource(VideoSource videoSource) async {

@@ -52,6 +52,10 @@ class NativeVideoPlayerApi(
         channel.invokeMethod("onPlaybackPositionChanged", position)
     }
 
+    fun onPlaybackSourceResolved(url: String) {
+        channel.invokeMethod("onPlaybackSourceResolved", url)
+    }
+
     fun onError(error: Throwable) {
         channel.invokeMethod("onError", error.message)
     }
