@@ -39,8 +39,7 @@ final class PlaybackRegistration {
 @available(iOS 15.0, *)
 public final class VideoProxyServer: @unchecked Sendable {
     public static let shared = VideoProxyServer()
-    /// Session for upstream requests. Relay state is confined to `queue`; delegate callbacks
-    /// are hopped onto it, so the session's own delegate queue is not relied upon for ordering.
+    /// Session for upstream requests. Must use a serial delegate queue as per-request relay state is confined to it.
     public var session: URLSession?
 
     /// Keyed by the registered playlist's directory; sub-requests resolve by longest prefix. Only accessed on `queue`.
@@ -106,15 +105,6 @@ public final class VideoProxyServer: @unchecked Sendable {
     private var port: UInt16 = 0
     private var activeConnections = Set<ProxyConnection>()
 
-    /// In-flight upstream requests, keyed by request identity. Lets a client that reconnects
-    /// (e.g. AVPlayer giving up on a slow-to-ramp transcode) reattach to the still-running
-    /// request and stream from it, rather than restarting the transcode from scratch.
-    /// Only accessed on `queue`.
-    private var inflight: [String: UpstreamRequest] = [:]
-    /// How long an upstream request is kept alive with no attached client, so an imminent
-    /// reconnect can reattach (or be served from the just-completed buffer) before we give up.
-    fileprivate static let upstreamGraceTTL: TimeInterval = 5.0
-
     private init() {
         NotificationCenter.default.addObserver(
             self,
@@ -175,39 +165,6 @@ public final class VideoProxyServer: @unchecked Sendable {
 
     fileprivate func remove(_ conn: ProxyConnection) { activeConnections.remove(conn) }
 
-    /// Identity of a request for reattach matching: method + URL + byte range. Dynamic
-    /// playback hints (position/segment) are intentionally excluded so a reconnect for the
-    /// same resource reuses the in-flight request.
-    fileprivate static func requestKey(_ request: URLRequest) -> String {
-        let method = request.httpMethod ?? "GET"
-        let url = request.url?.absoluteString ?? ""
-        let range = request.value(forHTTPHeaderField: "Range") ?? ""
-        return "\(method)\u{0}\(url)\u{0}\(range)"
-    }
-
-    /// Attaches a client to an upstream request, reusing an in-flight/just-completed one for the
-    /// same key when possible, otherwise starting a fresh request. Must run on `queue`.
-    fileprivate func attach(_ connection: ProxyConnection, request: URLRequest, key: String, isPlaylist: Bool) {
-        if let existing = inflight[key], existing.canAttach {
-            existing.attach(connection)
-            return
-        }
-        guard let session = session else { return connection.deliverFailed() }
-        let upstream = UpstreamRequest(
-            key: key, request: request, isPlaylist: isPlaylist,
-            server: self, session: session, queue: queue
-        )
-        inflight[key] = upstream
-        upstream.attach(connection)
-        upstream.start()
-    }
-
-    /// Drops an upstream from the in-flight map, but only if it still owns the slot (a newer
-    /// request for the same key may have replaced it). Must run on `queue`.
-    fileprivate func removeUpstream(_ upstream: UpstreamRequest, forKey key: String) {
-        if inflight[key] === upstream { inflight.removeValue(forKey: key) }
-    }
-
     /// Reconstructs the original URL from a proxy request target (e.g. `/https/host:port/path?q=1`).
     fileprivate func originalURL(fromRequestTarget target: String) -> URL? {
         let pathQuery = target.split(separator: "?", maxSplits: 1)
@@ -225,16 +182,18 @@ public final class VideoProxyServer: @unchecked Sendable {
 }
 
 @available(iOS 15.0, *)
-private final class ProxyConnection: NSObject {
+private final class ProxyConnection: NSObject, URLSessionDataDelegate {
     let connection: NWConnection
     private weak var server: VideoProxyServer?
     private let queue: DispatchQueue
     private var buffer = Data()
-    /// The upstream request this connection is currently streaming from, if any.
-    private var upstream: UpstreamRequest?
+    private var currentTask: URLSessionDataTask?
     private var headersSent = false
+    private var captureBuffer: Data?
     private static let headerEnd = Data("\r\n\r\n".utf8)
     private static let skipHeaders: Set<String> = ["host", "connection", "proxy-connection", "keep-alive"]
+    private static let extinfTagLength = 8
+    private static let extinfTag: UInt64 = Array("#EXTINF:".utf8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
 
     init(connection: NWConnection, server: VideoProxyServer, queue: DispatchQueue) {
         self.connection = connection
@@ -254,10 +213,8 @@ private final class ProxyConnection: NSObject {
     }
 
     private func cleanup() {
-        // Detach from the upstream but leave it running: a reconnect for the same resource can
-        // reattach to it instead of restarting the (real-time transcoded) request from scratch.
-        upstream?.detach(self)
-        upstream = nil
+        currentTask?.cancel()
+        currentTask = nil
         server?.remove(self)
     }
 
@@ -277,40 +234,13 @@ private final class ProxyConnection: NSObject {
     }
 
     private func forwardRequest() {
-        guard let server = server else { return sendError(502) }
+        guard let session = server?.session else { return sendError(502) }
         guard let request = parseRequest() else { return sendError(400) }
+        let task = session.dataTask(with: request)
+        task.delegate = self
+        currentTask = task
         headersSent = false
-        let key = VideoProxyServer.requestKey(request)
-        let isPlaylist = request.url?.path.hasSuffix(".m3u8") ?? false
-        server.attach(self, request: request, key: key, isPlaylist: isPlaylist)
-    }
-
-    // MARK: Delivery from the attached upstream (all invoked on `queue`)
-
-    /// Binds this connection to an upstream so disconnects can orphan it for reattach.
-    fileprivate func bindUpstream(_ upstream: UpstreamRequest) {
-        self.upstream = upstream
-    }
-
-    fileprivate func deliverHead(_ head: Data) {
-        headersSent = true
-        connection.send(content: head, completion: .contentProcessed { _ in })
-    }
-
-    fileprivate func deliverBody(_ data: Data) {
-        connection.send(content: data, completion: .contentProcessed { _ in })
-    }
-
-    /// Upstream finished successfully: detach and wait for the next request (keep-alive).
-    fileprivate func deliverFinished() {
-        upstream = nil
-        readRequest()
-    }
-
-    /// Upstream failed: surface a 502 if nothing was sent yet, otherwise drop the connection.
-    fileprivate func deliverFailed() {
-        upstream = nil
-        if !headersSent { sendError(502) } else { connection.cancel() }
+        task.resume()
     }
 
     private func parseRequest() -> URLRequest? {
@@ -353,175 +283,46 @@ private final class ProxyConnection: NSObject {
             self?.connection.cancel()
         })
     }
-}
-
-/// A single upstream request whose lifetime is decoupled from the client connection that
-/// triggered it. If the client disconnects (e.g. AVPlayer giving up on a slow transcode ramp-up),
-/// the request keeps running and buffering; a reconnecting client for the same resource reattaches
-/// and is replayed the buffered prefix before streaming live, so the transcode runs only once.
-/// All state is confined to `queue`; URLSession delegate callbacks are hopped onto it.
-@available(iOS 15.0, *)
-private final class UpstreamRequest: NSObject, URLSessionDataDelegate {
-    private let key: String
-    private let request: URLRequest
-    private let isPlaylist: Bool
-    private weak var server: VideoProxyServer?
-    private let session: URLSession
-    private let queue: DispatchQueue
-
-    private var task: URLSessionDataTask?
-    /// The client currently streaming from this request, if any.
-    private weak var client: ProxyConnection?
-    /// Serialized HTTP response head, once the upstream responds.
-    private var responseHead: Data?
-    /// All body bytes received so far, for replaying to a (re)attaching client.
-    private var body = Data()
-    private var finished = false
-    private var failed = false
-    private var evictWorkItem: DispatchWorkItem?
-
-    private static let extinfTagLength = 8
-    private static let extinfTag: UInt64 = Array("#EXTINF:".utf8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
-
-    /// Reusable only while no client is attached and the request hasn't failed.
-    var canAttach: Bool { client == nil && !failed }
-
-    init(
-        key: String, request: URLRequest, isPlaylist: Bool,
-        server: VideoProxyServer, session: URLSession, queue: DispatchQueue
-    ) {
-        self.key = key
-        self.request = request
-        self.isPlaylist = isPlaylist
-        self.server = server
-        self.session = session
-        self.queue = queue
-    }
-
-    func start() {
-        let task = session.dataTask(with: request)
-        task.delegate = self
-        self.task = task
-        task.resume()
-    }
-
-    /// Attaches a client, replaying whatever has been buffered so far. Must run on `queue`.
-    func attach(_ connection: ProxyConnection) {
-        cancelEviction()
-        client = connection
-        connection.bindUpstream(self)
-        if let head = responseHead {
-            connection.deliverHead(head)
-            if !body.isEmpty { connection.deliverBody(body) }
-        }
-        if finished {
-            connection.deliverFinished()
-            client = nil
-            scheduleEviction()
-        } else if failed {
-            connection.deliverFailed()
-            client = nil
-            scheduleEviction()
-        }
-    }
-
-    /// Detaches a disconnecting client but keeps the request alive briefly for a reconnect.
-    /// Must run on `queue`.
-    func detach(_ connection: ProxyConnection) {
-        guard client === connection else { return }
-        client = nil
-        scheduleEviction()
-    }
-
-    private func scheduleEviction() {
-        cancelEviction()
-        let work = DispatchWorkItem { [weak self] in self?.evict() }
-        evictWorkItem = work
-        queue.asyncAfter(deadline: .now() + VideoProxyServer.upstreamGraceTTL, execute: work)
-    }
-
-    private func cancelEviction() {
-        evictWorkItem?.cancel()
-        evictWorkItem = nil
-    }
-
-    private func evict() {
-        guard client == nil else { return } // a client reattached in the meantime
-        task?.cancel()
-        task = nil
-        server?.removeUpstream(self, forKey: key)
-    }
-
-    // MARK: URLSessionDataDelegate — callbacks hop onto `queue`
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let http = response as? HTTPURLResponse else {
-            completionHandler(.cancel)
-            queue.async { [weak self] in self?.handleFailure() }
-            return
-        }
+        guard let http = response as? HTTPURLResponse else { return completionHandler(.cancel) }
         var head = Data(capacity: 1024)
         head.append(contentsOf: "HTTP/1.1 \(http.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: http.statusCode))\r\n".utf8)
         for (key, value) in http.allHeaderFields {
             head.append(contentsOf: "\(key): \(value)\r\n".utf8)
         }
         head.append(contentsOf: "\r\n".utf8)
-        completionHandler(.allow)
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            self.responseHead = head
-            self.client?.deliverHead(head)
+        headersSent = true
+        // Capture playlists to parse timelines
+        if http.statusCode == 200, dataTask.originalRequest?.url?.path.hasSuffix(".m3u8") == true {
+            captureBuffer = Data()
         }
+        connection.send(content: head, completion: .contentProcessed { _ in })
+        completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            self.body.append(data)
-            self.client?.deliverBody(data)
-        }
+        captureBuffer?.append(data)
+        connection.send(content: data, completion: .contentProcessed { _ in })
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            if let error = error {
-                // Cancellation is our own eviction tearing the task down; nothing to deliver.
-                if (error as NSError).code == NSURLErrorCancelled { self.task = nil; return }
-                return self.handleFailure()
+        if let captured = captureBuffer, error == nil, let url = task.originalRequest?.url {
+            let segmentEnds = Self.parseSegmentEnds(captured)
+            if !segmentEnds.isEmpty {
+                server?.storeTimeline(segmentEnds, forPlaylist: url)
             }
-            if self.isPlaylist {
-                let segmentEnds = UpstreamRequest.parseSegmentEnds(self.body)
-                if !segmentEnds.isEmpty, let url = self.request.url {
-                    self.server?.storeTimeline(segmentEnds, forPlaylist: url)
-                }
-            }
-            self.finished = true
-            self.task = nil
-            if let client = self.client {
-                client.deliverFinished()
-                self.client = nil
-            }
-            self.scheduleEviction()
         }
-    }
-
-    /// Marks the request failed, notifies any attached client, and schedules eviction. On `queue`.
-    private func handleFailure() {
-        guard !failed else { return }
-        failed = true
-        task = nil
-        client?.deliverFailed()
-        client = nil
-        scheduleEviction()
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
-                    willCacheResponse proposedResponse: CachedURLResponse,
-                    completionHandler: @escaping (CachedURLResponse?) -> Void) {
-        completionHandler(nil)
+        captureBuffer = nil
+        if let error = error {
+            if (error as NSError).code == NSURLErrorCancelled { return }
+            if !headersSent { return sendError(502) }
+            return connection.cancel()
+        }
+        currentTask = nil
+        self.readRequest()
     }
 
     /// Cumulative segment end times from `#EXTINF:` lines.
@@ -559,5 +360,11 @@ private final class UpstreamRequest: NSObject, URLSessionDataDelegate {
             return nil
         }
         return value
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    willCacheResponse proposedResponse: CachedURLResponse,
+                    completionHandler: @escaping (CachedURLResponse?) -> Void) {
+        completionHandler(nil)
     }
 }
